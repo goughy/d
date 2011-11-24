@@ -1,5 +1,6 @@
 
-import std.socket, std.stdio, std.array;
+
+import std.socket, std.stdio, std.array, std.datetime;
 import std.conv, std.string;
 import std.ascii : isPrintable;
 import std.array : replicate;
@@ -136,6 +137,7 @@ struct MemcacheHeader
     @property ulong cas( ulong u )      { *(cast(ulong*) &_header[ 16 ]) = htonull( u ); return u; }
 
     ubyte[ 24 ] _header;
+    ubyte[]     _body; //may or may not be filled.
 
 private:
 
@@ -180,33 +182,12 @@ public:
     {
         if( sock is null )
             connect();
-
-        MemcacheHeader header;
-        header.magic    = Magic.REQUEST;
-        header.opcode   = Command.VERSION; //command
-
-        debug dumpHex( cast(char[]) header._header, "<< C:" );
-        if( sock.send( cast(ubyte[]) header._header ) < 0 )
-            throw new MemcacheException( "Failed to send header" );
-
-        long num = sock.receive( header._header );
-        debug dumpHex( cast(char[]) header._header, ">> S:" );
-
-        //verify packet && get status
-        assert( header.magic == Magic.RESPONSE );
+        
+        send( Command.VERSION );
+        MemcacheHeader header = receiveHeader();
         assert( header.opcode == Command.VERSION );
 
-        MemcacheObject obj;
-        obj.key.length  = header.keyLen;
-        obj.status      = header.status;
-        obj.cas         = header.cas;
-
-        obj.value.length = header.bodyLen;
-//        writeln( "Receiving an extra ", header.bodyLen, " bytes" );
-        num = sock.receive( obj.value );
-        debug dumpHex( cast(char[]) obj.value, ">> S:" );
-
-        return (cast(char[]) obj.value).idup;
+        return (cast(char[]) header._body).idup;
     }
 
     MemcacheObject[] get( ubyte[] key )
@@ -214,21 +195,33 @@ public:
         if( sock is null )
             connect();
 
-        MemcacheHeader header;
-        header.magic    = Magic.REQUEST;
-        header.opcode   = Command.GET; //command
-        header.keyLen   = cast(ushort) key.length; //key length
-        header.dataType = DataType.RAW;
+        send( Command.GET, key );
+        return receiveUntil( Command.GET );
+    }
 
-        debug dumpHex( cast(char[]) header._header, "<< C:" );
-        if( sock.send( cast(ubyte[]) header._header ) < 0 )
-            throw new MemcacheException( "Failed to send header" );
+    MemcacheObject[] getk( ubyte[] key )
+    {
+        if( sock is null )
+            connect();
 
-        debug dumpHex( cast(char[]) key, "<< C:" );
-        if( sock.send( key ) < 0 )
-            throw new MemcacheException( "Failed to send key" );
+        send( Command.GETK, key );
+        return receiveUntil( Command.GETK );
+    }
 
-        return receiveAll();
+    void getq( ubyte[] key )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.GETQ, key );
+    }
+
+    void getkq( ubyte[] key )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.GETKQ, key );
     }
 
     MemcacheObject add( ref MemcacheObject obj )
@@ -259,27 +252,11 @@ public:
     {
         if( sock is null )
             connect();
+        
+        send( Command.DELETE, key );
 
-        MemcacheHeader header;
-        header.magic = Magic.REQUEST; //magic
-        header.opcode = Command.DELETE; //command
-        header.keyLen = cast(ushort) key.length; //key length
-        header.dataType = DataType.RAW;
-
-        debug dumpHex( cast(char[]) header._header, "<< C:" );
-        if( sock.send( header._header ) < 0 )
-            throw new MemcacheException( "Failed to send header" );
-
-        debug dumpHex( cast(char[]) key, "<< C:" );
-        if( sock.send( key ) < 0 )
-            throw new MemcacheException( "Failed to send data" );
-
-        long num = sock.receive( header._header );
-        debug dumpHex( cast(char[]) header._header, ">> S:" );
-
-        //verify packet && get status
-        assert( header.magic == Magic.RESPONSE );
-        assert( header.opcode == Command.DELETE );
+        MemcacheHeader header = receiveHeader();
+        assert( header.opcode == Command.DELETE );//verify packet && get status
 
         return header.status;
     }
@@ -302,47 +279,23 @@ public:
 
     MemcacheObject[] noop()
     {
-        MemcacheHeader header;
-        header.magic = Magic.REQUEST; //magic
-        header.opcode = Command.NOOP; //command
-        header.dataType = DataType.RAW;
-
-        debug dumpHex( cast(char[]) header._header, "<< C:NOOP REQUEST" );
-        if( sock.send( header._header ) < 0 )
-            throw new MemcacheException( "Failed to send header" );
-
-        //receive the NOOP response and any pending messages
-        MemcacheObject[] allObjs = receiveAll();
-        assert( allObjs.length > 0 );
-        MemcacheObject noopResp = allObjs[ 0 ];
-        assert( noopResp.status == Status.OK );
-
-        return allObjs[ 1 .. $ ];
+        send( Command.NOOP );
+        return receiveUntil( Command.NOOP );
     }
 
     string[string] stats()
     {
         string[string] arrStat;
 
-        MemcacheHeader header;
-        header.magic = Magic.REQUEST; //magic
-        header.opcode = Command.STAT; //command
-        header.dataType = DataType.RAW;
-
-        debug dumpHex( cast(char[]) header._header, "<< C:STAT REQUEST" );
-        if( sock.send( header._header ) < 0 )
-            throw new MemcacheException( "Failed to send header" );
+        send( Command.STAT );
 
         while( true )
         {
-            long num = sock.receive( header._header );
-            if( num < 0 || header.keyLen == 0 )
+            MemcacheHeader header = receiveHeader();
+            if( header.keyLen == 0 )
                 break;
 
-            ubyte[] buf;
-            buf.length = header.bodyLen;
-            num = sock.receive( buf );
-            arrStat[ (cast(char[]) buf[ 0 .. header.keyLen ]).idup ] = (cast(char[]) buf[ header.keyLen .. $ ]).idup; 
+            arrStat[ (cast(char[]) header._body[ 0 .. header.keyLen ]).idup ] = (cast(char[]) header._body[ header.keyLen .. $ ]).idup; 
         }
 
         return arrStat;
@@ -350,17 +303,8 @@ public:
 
     void quit()
     {
-        MemcacheHeader header;
-        header.magic = Magic.REQUEST; //magic
-        header.opcode = Command.QUIT; //command
-        header.dataType = DataType.RAW;
-
-        debug dumpHex( cast(char[]) header._header, "<< C:QUIT REQUEST" );
-        if( sock.send( header._header ) < 0 )
-            throw new MemcacheException( "Failed to send header" );
-
-        long num = sock.receive( header._header );
-        debug dumpHex( cast(char[]) header._header, "<< C:QUIT RESPONSE" );
+        send( Command.QUIT );
+        MemcacheHeader header = receiveHeader();
         assert( header.status == Status.OK );
 
         sock.close();
@@ -372,46 +316,89 @@ private:
     string host;
     ushort port;
     Socket sock;
-    uint   queued;
 
-    MemcacheObject[] receiveAll()
+    void send( Command cmd, ubyte[] key = [] )
+    {
+        MemcacheHeader header;
+        header.magic    = Magic.REQUEST; //magic
+        header.opcode   = cmd; //command
+        header.dataType = DataType.RAW;
+        header.keyLen   = cast(ushort) key.length;
+
+        debug dumpHex( cast(char[]) header._header, "<< C:" ~ to!string( cmd ) );
+        if( sock.send( header._header ) < 0 )
+            throw new MemcacheException( "Failed to send header" );
+
+        if( key.length > 0 )
+        {
+            debug dumpHex( cast(char[]) key, "<< C:" ~ to!string( cmd ) ~ " body");
+            if( sock.send( key ) < 0 )
+                throw new MemcacheException( "Failed to send key" );
+        }
+    }
+
+    MemcacheObject[] receiveUntil( Command cmd )
     {
         MemcacheObject[] objs;
-        objs.length = queued + 1;
-        for( int i = 0; i < objs.length; ++i )
+        while( true )
         {
-            MemcacheHeader header;
-            long num = sock.receive( header._header );
-            debug dumpHex( cast(char[]) header._header, ">> S:" );
+            MemcacheHeader header = receiveHeader();
 
             MemcacheObject obj;
             obj.key.length   = header.keyLen;
             obj.status       = header.status;
             obj.cas          = header.cas;
             obj.value.length = header.bodyLen;
-            if( header.bodyLen > 0 )
+            if( header.bodyLen > 0 && header.status == Status.OK )
             {
-                num = sock.receive( obj.value );
-                debug dumpHex( cast(char[]) obj.value, ">> S:" );
-
-                if( header.status == Status.OK )
+                switch( header.opcode )
                 {
-                    obj.flags = ntohl( *(cast(uint*) &obj.value[ 0 ]) );
-                    if( header.keyLen > 0 )
-                        obj.key = obj.value[ 4 .. header.keyLen + 4 ];
+                    case Command.GET:
+                    case Command.GETQ:
+                    case Command.GETK:
+                    case Command.GETKQ:
+                        {
+                            obj.flags = ntohl( *(cast(uint*) &header._body[ 0 ]) );
+                            if( header.keyLen > 0 )
+                                obj.key = header._body[ 4 .. header.keyLen + 4 ];
 
-                    obj.value = obj.value[ header.keyLen + 4 .. $ ];
+                            obj.value = header._body[ header.keyLen + 4 .. $ ];
+                        }
+                        break;
+
+                    default:
+                        break;
                 }
             }
-
-            objs[ i ] = obj;
+            objs ~= obj;
+            if( header.opcode == cmd )
+                return objs;
         }
-//        writeln( "receiveAll() returning ", objs.length, " memcache objects" );
-        return objs;
+    }
+
+    MemcacheHeader receiveHeader()
+    {
+        MemcacheHeader header;
+        if( sock.receive( header._header ) <= 0 )
+            throw new MemcacheException( "Socket closed receiving header" );
+
+        debug dumpHex( cast(char[]) header._header, ">> S:" ~ to!string( cast(Command) header.opcode ) );
+        assert( header.magic == Magic.RESPONSE );
+        if( header.bodyLen > 0 )
+        {
+            header._body.length = header.bodyLen;
+            if( sock.receive( header._body ) <= 0 )
+                throw new MemcacheException( "Socket closed receiving body" );
+
+            debug dumpHex( cast(char[]) header._body, ">> S:" ~ to!string( cast(Command) header.opcode ) );
+        }
+        return header;
     }
 
     MemcacheObject setImpl( Command cmd, ref MemcacheObject obj )
     {
+//        StopWatch sw;
+//        sw.start();
         MemcacheHeader header;
         header.magic = Magic.REQUEST; //magic
         header.opcode = cmd; //command
@@ -431,19 +418,23 @@ private:
         sendBuf.put( obj.key );
         sendBuf.put( obj.value );
 
-        debug dumpHex( cast(char[]) header._header, "<< C:" );
+//        long last = sw.peek().msecs;
+//        writeln( "Header generated in ", last, "ms" );
+        debug dumpHex( cast(char[]) header._header, "<< C:" ~ to!string( cmd ) );
         if( sock.send( header._header ) < 0 )
             throw new MemcacheException( "Failed to send header" );
 
-        debug dumpHex( cast(char[]) sendBuf.data, "<< C:" );
+//        writeln( "Header sent in ", sw.peek().msecs - last, "ms" );
+//        last = sw.peek().msecs;
+
+        debug dumpHex( cast(char[]) sendBuf.data, "<< C:" ~ to!string( cmd ) ~ " body" );
         if( sock.send( sendBuf.data ) < 0 )
             throw new MemcacheException( "Failed to send data" );
 
-        long num = sock.receive( header._header );
-        debug dumpHex( cast(char[]) header._header, ">> S:" );
+//        writeln( "Data sent in ", sw.peek().msecs - last, "ms" );
+//        last = sw.peek().msecs;
 
-        //verify packet && get status
-        assert( header.magic == Magic.RESPONSE );
+        header = receiveHeader();
         assert( header.opcode == cmd );
 
         obj.status = header.status;
@@ -460,7 +451,7 @@ private:
         header.dataType = DataType.RAW;
         header.extraLen = 20;
  
-        debug dumpHex( cast(char[]) header._header, "<< C:INCR/DECR REQUEST" );
+        debug dumpHex( cast(char[]) header._header, "<< C:" ~ to!string( cmd ) );
         if( sock.send( header._header ) < 0 )
             throw new MemcacheException( "Failed to send header" );
        //extras
@@ -471,27 +462,20 @@ private:
         *(cast(uint*)  &buf[ 16 ]) = htonl( expiry );
         buf[ 20 .. $ ] = counter;
 
-        debug dumpHex( cast(char[]) buf, "<< C:INCR/DECR BODY" );
+        debug dumpHex( cast(char[]) buf, "<< C:" ~ to!string( cmd ) ~ " body" );
         if( sock.send( buf ) < 0 )
             throw new MemcacheException( "Failed to send data" );
 
-        long num = sock.receive( header._header );
-        debug dumpHex( cast(char[]) header._header, ">> S:INCR/DECR RESPONSE" );
-
-        //verify packet && get status
-        assert( header.magic == Magic.RESPONSE );
+        header = receiveHeader();
         assert( header.opcode == cmd );
 
-        buf.length = header.bodyLen;
-        if( buf.length > 0 )
+        if( header.bodyLen > 0 )
         {
-            num = sock.receive( buf );
-            debug dumpHex( cast(char[]) buf, ">> S: INCR/DECR BODY" );
             if( header.status == Status.KEY_NOTFOUND && expiry == 0xffffffff )
-                throw new MemcacheException( header.status, (cast(char[]) buf).idup );
+                throw new MemcacheException( header.status, (cast(char[]) header._body).idup );
             
             if( header.status == Status.OK )
-                return ntohull( *(cast(ulong*) &buf[ 0 ] ));
+                return ntohull( *(cast(ulong*) &header._body[ 0 ] ));
         }
         return initVal;
     }

@@ -1,6 +1,23 @@
 
 import memcache;
-import std.stdio, std.conv, std.datetime;
+import std.stdio, std.conv, std.datetime, std.concurrency;
+
+
+void threadFunc( string prefix, int num )
+{
+    StopWatch sw;
+    MemcacheServer s = new MemcacheServer();
+    sw.start();
+    for( int i = 0; i < num; ++i )
+    {
+        MemcacheObject o;
+        o.key   = cast(ubyte[]) ("key_" ~ prefix ~ to!string( i )).dup;
+        o.value = cast(ubyte[]) std.array.replicate( "a", 47 ).dup;
+        
+        s.set( o );
+    }
+    writeln( prefix, ": 100 objects in ", sw.peek().msecs );
+}
 
 int main( string[] args )
 {
@@ -32,6 +49,10 @@ int main( string[] args )
 
     obj.key = cast(ubyte[]) "abc1";
     assert( s.set( obj ).status == Status.OK );
+
+    obj = s.getk( obj.key )[ 0 ];
+    assert( obj.key == ['a', 'b', 'c', '1' ] );
+
     assert( s.remove( obj.key ) == Status.OK );
     
     try
@@ -51,40 +72,24 @@ int main( string[] args )
     foreach( k, v; stats )
         writeln( "STATS: ", k, "\t", v );
 
+    assert( s.set( obj ).status == Status.OK );
+    s.getq( cast(ubyte[]) "abc1" );
+    s.getq( cast(ubyte[]) "abc2" );
+    s.getq( cast(ubyte[]) "abc3" );
+    s.getq( cast(ubyte[]) "abc4" );
+    s.getq( cast(ubyte[]) "abc5" );
+    writeln( "noop() returned ", s.noop().length );
+    assert( s.remove( obj.key ) == Status.OK );
+
     s.quit();
 
-    StopWatch sw;
-    sw.start();
-    for( int i = 0; i < 1000; ++i )
-    {
-        MemcacheObject o;
-        o.key   = cast(ubyte[]) ("key_" ~ to!string( i )).dup;
-        o.value = cast(ubyte[]) std.array.replicate( "a", 47 ).dup;
-        s.set( o );
-    }
-    sw.stop();
-    writeln( "Added 1000 objects in ", sw.peek().msecs, "ms" );
-    sw.reset();
-
-    sw.start();
-    for( int i = 0; i < 1000; ++i )
-    {
-        ubyte[] key = cast(ubyte[]) ("key_" ~ to!string( i )).dup;
-        MemcacheObject o = s.get( key )[ 0 ];
-    }
-    sw.stop();
-    writeln( "Retrieved 1000 objects in ", sw.peek().msecs, "ms" );
-    sw.reset();
-
-    sw.start();
-    for( int i = 0; i < 1000; ++i )
-    {
-        ubyte[] key = cast(ubyte[]) ("key_" ~ to!string( i )).dup;
-        s.remove( key );
-    }
-    sw.stop();
-    writeln( "Deleted 1000 objects in ", sw.peek().msecs, "ms" );
-    sw.reset();
+//    MemcacheServer[] servers;
+//    servers.length = 100;
+//    for( int i = 0; i < 100; ++i )
+//    {
+//        spawn( &threadFunc, to!string( i ), 100 );
+//    }
+//
 
     return 0;
 }
