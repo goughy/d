@@ -232,6 +232,14 @@ public:
         return setImpl( Command.ADD, obj );
     }
 
+    void addq( ref MemcacheObject obj )
+    {
+        if( sock is null )
+            connect();
+
+        setImpl( Command.ADDQ, obj ); //response ignored when QUIET
+    }
+
     MemcacheObject replace( ref MemcacheObject obj )
     {
         if( sock is null )
@@ -240,12 +248,68 @@ public:
         return setImpl( Command.REPLACE, obj );
     }
 
+    void replaceq( ref MemcacheObject obj )
+    {
+        if( sock is null )
+            connect();
+
+        setImpl( Command.REPLACEQ, obj );
+    }
+
+    Status append( ubyte[] key, ubyte[] value )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.APPEND, key, value );
+        MemcacheHeader header = receiveHeader();
+        assert( header.opcode == Command.APPEND );//verify packet && get status
+
+        return header.status;
+    }
+
+    void appendq( ubyte[] key, ubyte[] value )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.APPENDQ, key, value );
+    }
+
+    Status prepend( ubyte[] key, ubyte[] value )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.PREPEND, key, value );
+        MemcacheHeader header = receiveHeader();
+        assert( header.opcode == Command.PREPEND );//verify packet && get status
+
+        return header.status;
+    }
+
+    void prependq( ubyte[] key, ubyte[] value )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.PREPENDQ, key, value );
+    }
+
     MemcacheObject set( ref MemcacheObject obj )
     {
         if( sock is null )
             connect();
 
         return setImpl( Command.SET, obj );
+    }
+
+    void setq( ref MemcacheObject obj )
+    {
+        if( sock is null )
+            connect();
+
+        setImpl( Command.SETQ, obj );//return discarded when QUIET
     }
 
     Status remove( ubyte[] key )
@@ -259,6 +323,14 @@ public:
         assert( header.opcode == Command.DELETE );//verify packet && get status
 
         return header.status;
+    }
+
+    void removeq( ubyte[] key )
+    {
+        if( sock is null )
+            connect();
+        
+        send( Command.DELETEQ, key );
     }
 
     ulong incr( ubyte[] counter, ulong howMuch, ulong initVal = 0UL, uint expiry = 0xffffffff )
@@ -275,6 +347,42 @@ public:
             connect();
 
         return incrDecr( Command.DECR, counter, howMuch, initVal, expiry );
+    }
+
+    void incrq( ubyte[] counter, ulong howMuch, ulong initVal = 0UL, uint expiry = 0xffffffff )
+    {
+        if( sock is null )
+            connect();
+
+        incrDecr( Command.INCRQ, counter, howMuch, initVal, expiry );
+    }
+
+    void decrq( ubyte[] counter, ulong howMuch, ulong initVal = 0UL, uint expiry = 0xffffffff )
+    {
+        if( sock is null )
+            connect();
+
+        incrDecr( Command.DECRQ, counter, howMuch, initVal, expiry );
+    }
+
+    Status flush( uint expiry )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.FLUSH, expiry );
+        MemcacheHeader header = receiveHeader();
+        assert( header.opcode == Command.FLUSH );//verify packet && get status
+
+        return header.status;
+    }
+
+    void flushq( uint expiry )
+    {
+        if( sock is null )
+            connect();
+
+        send( Command.FLUSHQ, expiry );
     }
 
     MemcacheObject[] noop()
@@ -311,19 +419,28 @@ public:
         sock = null;
     }
 
+    void quitq()
+    {
+        send( Command.QUITQ );
+
+        sock.close();
+        sock = null;
+    }
+
 private:
 
     string host;
     ushort port;
     Socket sock;
 
-    void send( Command cmd, ubyte[] key = [] )
+    void send( Command cmd, ubyte[] key = [], ubyte[] value = [] )
     {
         MemcacheHeader header;
         header.magic    = Magic.REQUEST; //magic
         header.opcode   = cmd; //command
         header.dataType = DataType.RAW;
         header.keyLen   = cast(ushort) key.length;
+        header.valueLen = cast(uint) value.length;
 
         debug dumpHex( cast(char[]) header._header, "<< C:" ~ to!string( cmd ) );
         if( sock.send( header._header ) < 0 )
@@ -335,6 +452,34 @@ private:
             if( sock.send( key ) < 0 )
                 throw new MemcacheException( "Failed to send key" );
         }
+
+        if( value.length > 0 )
+        {
+            debug dumpHex( cast(char[]) value, "<< C:" ~ to!string( cmd ) ~ " body");
+            if( sock.send( value ) < 0 )
+                throw new MemcacheException( "Failed to send value" );
+        }
+    }
+
+    void send( Command cmd, uint extra )
+    {
+        MemcacheHeader header;
+        header.magic    = Magic.REQUEST; //magic
+        header.opcode   = cmd; //command
+        header.dataType = DataType.RAW;
+        header.extraLen = 4;
+
+        header._body.length = 4;
+        *(cast(uint*) &header._body[0]) = htonl( extra );
+
+        debug dumpHex( cast(char[]) header._header, "<< C:" ~ to!string( cmd ) );
+        if( sock.send( header._header ) < 0 )
+            throw new MemcacheException( "Failed to send header" );
+
+
+        debug dumpHex( cast(char[]) header._body, "<< C:" ~ to!string( cmd ) ~ " body");
+        if( sock.send( header._body ) < 0 )
+            throw new MemcacheException( "Failed to send key" );
     }
 
     MemcacheObject[] receiveUntil( Command cmd )
@@ -400,12 +545,13 @@ private:
 //        StopWatch sw;
 //        sw.start();
         MemcacheHeader header;
-        header.magic = Magic.REQUEST; //magic
-        header.opcode = cmd; //command
-        header.keyLen = cast(ushort) obj.key.length; //key length
-        header.extraLen = 0x08; //extra length
-        header.dataType = DataType.RAW;
+        header.magic     = Magic.REQUEST; //magic
+        header.opcode    = cmd; //command
+        header.keyLen    = cast(ushort) obj.key.length; //key length
+        header.extraLen  = 0x08; //extra length
+        header.dataType  = DataType.RAW;
         header.valueLen  = cast(uint) obj.value.length;
+        header.cas       = obj.cas;
 
         //extras
         auto sendBuf = appender!(ubyte[])();
@@ -433,6 +579,9 @@ private:
 
 //        writeln( "Data sent in ", sw.peek().msecs - last, "ms" );
 //        last = sw.peek().msecs;
+
+        if( cmd == Command.SETQ || cmd == Command.REPLACEQ || cmd == Command.ADDQ )
+            return obj;
 
         header = receiveHeader();
         assert( header.opcode == cmd );
@@ -465,6 +614,9 @@ private:
         debug dumpHex( cast(char[]) buf, "<< C:" ~ to!string( cmd ) ~ " body" );
         if( sock.send( buf ) < 0 )
             throw new MemcacheException( "Failed to send data" );
+
+        if( cmd == Command.INCRQ || cmd == Command.DECRQ )
+            return initVal;
 
         header = receiveHeader();
         assert( header.opcode == cmd );
@@ -514,8 +666,11 @@ private:
 //    ubyte[] value;
 //}
 
-void dump( MemcacheObject o )
+void dump( MemcacheObject o, string title = "" )
 {
+    if( title.length > 0 )
+        writeln( title );
+
     writeln( "O: status " ~ to!string( o.status ) );
     writefln( "O: flags  %08x", o.flags );
     writeln( "O: expiry " ~ to!string( o.expiry ) );

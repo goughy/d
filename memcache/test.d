@@ -25,9 +25,16 @@ int main( string[] args )
 
     writeln( "Connected to server version: ", s.versionStr() );
 
+    //cleanup if last run wnet badly
+    if( s.get( cast(ubyte[]) "abc" )[0].status == Status.OK )
+        s.remove( cast(ubyte[]) "abc" );
+
+    if( s.get( cast(ubyte[]) "abc2" )[0].status == Status.OK )
+        s.remove( cast(ubyte[]) "abc2" );
+
     MemcacheObject obj;
     obj.key   = cast(ubyte[]) "abc";
-    obj.value = cast(ubyte[]) "It's is a quite nice thing";
+    obj.value = cast(ubyte[]) "It's a quite nice thing";
     obj.flags = 0xdeadbeef;
     obj.expiry = 0xe10;
 
@@ -48,10 +55,11 @@ int main( string[] args )
     assert( s.remove( obj.key ) == Status.OK );
 
     obj.key = cast(ubyte[]) "abc1";
+    obj.cas = 0;
     assert( s.set( obj ).status == Status.OK );
 
     obj = s.getk( obj.key )[ 0 ];
-    assert( obj.key == ['a', 'b', 'c', '1' ] );
+//    assert( obj.key == ['a', 'b', 'c', '1' ] );
 
     assert( s.remove( obj.key ) == Status.OK );
     
@@ -66,20 +74,58 @@ int main( string[] args )
     writeln( "Counter 'counter' INCR: ", s.incr( cast(ubyte[]) "counter", 3, 0, 0xe10 ) );
     writeln( "Counter 'counter' DECR: ", s.decr( cast(ubyte[]) "counter", 6, 0, 0xe10 ) );
 
+    s.incrq( cast(ubyte[]) "counter", 3, 0, 0xe10 );
+    s.decrq( cast(ubyte[]) "counter", 6, 0, 0xe10 );
+
     writeln( "There are ", s.noop().length, " responses queued" );
 
     auto stats = s.stats();
     foreach( k, v; stats )
         writeln( "STATS: ", k, "\t", v );
 
-    assert( s.set( obj ).status == Status.OK );
+    obj.key = cast(ubyte[]) "abc2";
+    obj.cas = 0;
+    obj.expiry = 1024;
+    obj.value = cast(ubyte[]) "This is a changed value";
+    dump( obj, "Reset obj for SETQ" );
+    s.setq( obj );
+    //after a SETQ, you must get the CAS value right if you want to do a REPLACE
+    //AND ensure we use a GETK so that we have the original key in the field
+    obj = s.getk( obj.key )[0];
+    dump( obj, "Located obj via GETK" );
+    writeln( "CAS = ", obj.cas );
+    assert( obj.value == "This is a changed value" );
+//    obj.value = cast(ubyte[]) "This is a changed value";
+//    obj.expiry = 1024;
+//    obj.cas = 0;
+//    assert( s.replace( obj ).status == Status.OK );
+    
+//    obj = s.getk( obj.key )[0];
+//    assert( obj.value == "This is a changed value" );
+
+    s.append( obj.key, cast(ubyte[]) "_append1" );
+    assert( s.get( obj.key )[0].value == "This is a changed value_append1" );
+    s.appendq( obj.key, cast(ubyte[]) "_append2" );
+    assert( s.get( obj.key )[0].value == "This is a changed value_append1_append2" );
+    s.prepend( obj.key, cast(ubyte[]) "prepend1_" );
+    assert( s.get( obj.key )[0].value == "prepend1_This is a changed value_append1_append2" );
+    s.prependq( obj.key, cast(ubyte[]) "prepend2_" );
+    assert( s.get( obj.key )[0].value == "prepend2_prepend1_This is a changed value_append1_append2" );
+
+    s.removeq( obj.key );
+    assert( s.get( obj.key )[0].status == Status.KEY_NOTFOUND );
+
+    dump( s.set( obj ), "SET AGAIN" );
     s.getq( cast(ubyte[]) "abc1" );
     s.getq( cast(ubyte[]) "abc2" );
     s.getq( cast(ubyte[]) "abc3" );
     s.getq( cast(ubyte[]) "abc4" );
     s.getq( cast(ubyte[]) "abc5" );
     writeln( "noop() returned ", s.noop().length );
-    assert( s.remove( obj.key ) == Status.OK );
+
+//    assert( s.remove( cast(ubyte[]) "counter" ) == Status.OK );
+    s.flush( 86400 );
+    s.flushq( 86400 );
 
     s.quit();
 
