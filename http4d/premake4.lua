@@ -1,29 +1,35 @@
+require "d"
 
 solution "http4d"
-	configurations { "debug" }
+    configurations { "debug", "release", "doc" }
+--    location "build"
+    includedirs { ".", "./cjson", "/data/devel-ext/dlang/deimos/ZeroMQ" } 
+--    libdirs { "." }
 
-    configuration { "debug", "gmake" }
-        buildoptions { "-gc" }
+    configuration "debug"
+--        buildoptions "-v"
+        flags { "Symbols", "ExtraWarnings" }
 
-	project "http4d"
-		kind "StaticLib"
-		language "D"
-		files { "**.d" }
-		excludes { "main.d" }
+    configuration "release"
+        flags { "Optimize" }
 
-		configuration "debug64"
-			defines { "debug" }
-            platforms "x64"
-			flags { "Symbols", "ExtraWarnings" }
+    configuration "doc"
+        buildoptions "-D"
 
-	project "test"
-		kind "ConsoleApp"
-		language "D"
-		files { "main.d" }
-		links { "libhttp4d.a" }
+    project "cJSON"
+        kind "StaticLib"
+        language "C"
+        files { "cjson/*.c" }
 
-		configuration "debug64"
-			defines "debug"
-            platforms "x64"
-			flags { "Symbols", "ExtraWarnings", "Test" }
+    project "http4d"
+        kind "StaticLib"
+        language "D"
+        files { "*.d", "protocol/*.d", "util/*.d" }
+        excludes { "main.d" }
 
+    project "test"
+        kind "ConsoleApp"
+        language "D"
+        files { "main.d" }
+        links { "http4d", "cJSON" }
+        linkoptions { "-L-lzmq" }

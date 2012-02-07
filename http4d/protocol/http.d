@@ -25,7 +25,7 @@ string[] Headers = [ "", //dummy entry
                         "user-agent" ];
 
 enum TIMEOUT_USEC = 500;
-enum CHUNK_SIZE   = 1024; //try to get at least Content-Length header in first chunk
+enum CHUNK_SIZE   = 2048; //try to get at least Content-Length header in first chunk
 bool running = false;
 
 enum SERVER_HEADER = "HTTP-D/1.0";
@@ -133,10 +133,10 @@ ubyte[] readChunk( Socket s )
 
 // ------------------------------------------------------------------------- //
 
-Tuple!(Request,int) parseHttp( ubyte[] buf )
+Tuple!(Request,ulong) parseHttp( ubyte[] buf )
 {
     Request req = new Request();
-    int pos = 0, reqLen = 0;
+    ulong reqLen = 0UL;
     
     auto res = findSplit( buf, "\r\n" );
     //first line should be OP URL PROTO
@@ -151,8 +151,8 @@ Tuple!(Request,int) parseHttp( ubyte[] buf )
 //    writefln( "Length of remaining buffer is %d", res[ 2 ].length );
     for( res = findSplit( res[ 2 ], "\r\n" ); res[ 0 ].length > 0; )
     {
-        auto hdr = findSplit( res[ 0 ], ":" );
-//        writefln( "Header split = %s: %s", to!string( hdr[ 0 ] ), to!string( hdr[ 2 ] ) );
+        auto hdr = findSplit( res[ 0 ], ": " );
+//        debug writefln( "Header split = %s: %s", to!string( hdr[ 0 ] ), to!string( hdr[ 2 ] ) );
         if( hdr.length > 0 )
         {
             string key = capHeader( (cast(char[]) hdr[ 0 ]) ).idup; 
@@ -160,13 +160,14 @@ Tuple!(Request,int) parseHttp( ubyte[] buf )
 
             req.headers[ key ] = val;
             if( key == "Content-Length" )
-                reqLen = to!int( val );
+                reqLen = to!ulong( val );
         }
         res = findSplit( res[ 2 ], "\r\n" );
     }
 
+    req.data = cast(shared ubyte[]) res[ 2 ];
     debug dumpHex( cast(char[]) req.data, "HTTP REQUEST" );
-    return tuple( req, reqLen );
+    return tuple( req, reqLen - req.data.length );
 }
 
 // ------------------------------------------------------------------------- //
@@ -213,7 +214,7 @@ ubyte[] convertResponse( Response r )
     buf.put( '\r' );
     buf.put( '\n' );
     if( r.data.length > 0 )
-        buf.put( r.data );
+        buf.put( cast(ubyte[]) r.data );
 
     debug dumpHex( cast(char[]) buf.data, "HTTP RESPONSE" );
     return buf.data;
@@ -281,13 +282,15 @@ public:
                 auto r = parseHttp( httpChunk );
                 _lastReq = r[ 0 ];
                 _lastReq.connection = id;
-                _state   = r[ 1 ] == 0 ? _state & ~Flags.READING : _state | Flags.READING;
-                _lastReadPos = 0; //reset if needed
+                _expectedRead = r[ 1 ];
+                _state   = _expectedRead == 0 ? _state & ~Flags.READING : _state | Flags.READING;
                 break;
 
             case Flags.READING:
                 _lastReq.data ~= httpChunk;
-                _lastReadPos  += httpChunk.length;
+                _expectedRead -= httpChunk.length;
+                if( _expectedRead == 0 )
+                    _state = _state & ~Flags.READING;
                 break;
 
             default:
@@ -347,7 +350,7 @@ private:
     Request _lastReq;
     ubyte[] _lastResp;
     ulong   _lastWritePos;
-    ulong   _lastReadPos;
+    ulong   _expectedRead;
 }
 
 Connection[string] allConns;
@@ -383,8 +386,8 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
                 client.blocking( false );
 
                 client.setOption( SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1 );
-                linger lin = { 1, 1 };
-                client.setOption( SocketOptionLevel.SOCKET, SocketOption.LINGER, lin );
+//                linger lin = { 1, 1 };
+//                client.setOption( SocketOptionLevel.SOCKET, SocketOption.LINGER, lin );
 
                 Connection conn = new HttpConnection( client );// id is allocated in the constructor
                 proc.onLog( "accepted new client connection from " ~ conn.id );
@@ -404,7 +407,7 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
 
     void doWrite( Connection c ) 
     {
-        debug writeln( "(D) Writing from " ~ c.id );
+        debug writeln( "(D) Writing to " ~ c.id );
         c.write();
     }
 
@@ -584,7 +587,7 @@ public:
 
     void onIdle()
     {
-        receiveTimeout( 0, 
+        receiveTimeout( dur!"msecs"(0), 
                 ( int i )
                 {
                     switch( i )
@@ -705,16 +708,16 @@ Method toMethod( string m )
 
 void dump( Request r )
 {
-    writeln( "Connection: ", r.connection );
+    writeln( "Connection: ", r.connection.idup );
     writeln( "Method    : ", r.method );
-    writeln( "Protocol  : ", r.protocol );
-    writeln( "URI       : ", r.uri );
+    writeln( "Protocol  : ", r.protocol.idup );
+    writeln( "URI       : ", r.uri.idup );
 
     foreach( k, v; r.headers )
-        writeln( "\t", k, ": ", v );
+        writeln( "\t", k.idup, ": ", v.idup );
 
     foreach( k, v; r.attrs )
-        writeln( "\t", k, ": ", v );
+        writeln( "\t", k.idup, ": ", v.idup );
 }
 
 // ------------------------------------------------------------------------- //
@@ -724,11 +727,11 @@ void dump( Response r, string title = "" )
     if( title.length > 0 )
         writeln( title );
 
-    writeln( "Connection: ", r.connection );
-    writeln( "Status    : ", r.statusCode, " ", r.statusMesg );
+    writeln( "Connection: ", r.connection.idup );
+    writeln( "Status    : ", r.statusCode, " ", r.statusMesg.idup );
 
     foreach( k, v; r.headers )
-        writeln( "\t", k, ": ", v );
+        writeln( "\t", k.idup, ": ", v.idup );
 
     dumpHex( cast(char[]) r.data );
 }

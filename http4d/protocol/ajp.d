@@ -402,9 +402,9 @@ public:
         _id     = _c.remoteAddress().toString();
     }
 
-    @property string id()           { return _id; }
-    @property Socket socket()       { return _socket; }
-    @property Flags flags()         { return _state; }
+    @property string id()     { return _id; }
+    @property Socket socket() { return _socket; }
+    @property uint flags()    { return _state; }
 
     void close()
     {
@@ -501,7 +501,7 @@ private:
 
     string  _id;
     Socket  _socket;
-    Flags   _state;
+    uint    _state;
     Request _lastReq;
     ubyte[] _lastResp;
     int     _lastWritePos;
@@ -531,8 +531,8 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
         client.blocking( false );
 
         client.setOption( SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1 );
-        linger lin = { 1, 500 };
-        client.setOption( SocketOptionLevel.SOCKET, SocketOption.LINGER, lin );
+//        linger lin = { 1, 500 };
+//        client.setOption( SocketOptionLevel.SOCKET, SocketOption.LINGER, lin );
 
         Connection conn = new AjpConnection( client );// id is allocated in the constructor
         proc.onLog( "accepted new client connection from " ~ conn.id );

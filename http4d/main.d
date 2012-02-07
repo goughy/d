@@ -2,8 +2,7 @@ import std.stdio, std.string, std.regex, std.range, std.conv, std.math, std.stdi
 import std.getopt;
 import std.file, std.path, std.socket, std.concurrency;
 
-import protocol.ajp;
-import protocol.http;
+import protocol.http, protocol.ajp, protocol.mongrel2;
 
 import core.sys.posix.signal;
 
@@ -60,26 +59,46 @@ extern(C) void sigint_handler( int sig_no )
 
 int main( string[] args )
 {
+    string addr = "127.0.0.1";
+    ushort port = 8888;
+    bool   sync = false;
+    bool   http = true;
+    bool   ajp  = false;
+    bool   zmq  = false;
+    getopt( args, 
+            "a|addr", &addr,
+            "p|port", &port,
+            "s|sync", &sync,
+            "http", &http,
+            "ajp", &ajp,
+            "zmq", &zmq );
 
-    if( args.length == 1 )
+    sigaction_t action;
+    action.sa_handler = &sigint_handler;
+    sigaction( SIGINT, &action, null );
+
+    void function( string address, ushort port, Tid tid ) asyncEntry;
+    void function( string address, ushort port, Response delegate(Request) dg ) syncEntry;
+
+    if( sync )
+        syncEntry = zmq ? &zmqServe : (ajp ? &ajpServe : &httpServe);
+    else
+        asyncEntry = zmq ? &zmqServe : (ajp ? &ajpServe : &httpServe);
+
+    if( sync )
+            syncEntry( addr, port, 
+                    (Request req)
+                    {
+                        return handleRequest( req, "sync" );
+                    } );
+    else
     {
-        sigaction_t action;
-        action.sa_handler = &sigint_handler;
-        sigaction( SIGINT, &action, null );
-
-//        tid = spawnLinked( &ajpServe, "0.0.0.0", cast(ushort) 8009, thisTid() );
-//        setMaxMailboxSize( tid, 10000, OnCrowding.ignore );
-
-        tid = spawnLinked( &httpServe, "0.0.0.0", cast(ushort) 8888, thisTid() );
-//        setMaxMailboxSize( tid, 10000, OnCrowding.ignore );
-
-//        setMaxMailboxSize( thisTid(), 10000, OnCrowding.ignore );
-
+        tid = spawnLinked( asyncEntry, addr, port, thisTid() );
         while( !shutdown )
         {
             try
             {
-                receiveTimeout( 1000,
+                receiveTimeout( dur!"msecs"( 1000 ),
                         ( string s )
                         {
                             writefln( "MAIN: %s", s );
@@ -99,14 +118,6 @@ int main( string[] args )
                 writefln( "Caught exception waiting for msg: " ~ t.toString );
             }
         }
-    }
-    else
-    {
-        httpServe( "0.0.0.0", 8888, 
-                (Request req)
-                {
-                    return handleRequest( req, "sync" );
-                } );
     }
     
     writeln( "Bye" );
@@ -138,7 +149,7 @@ Response handleRequest( Request req, string type )
             resp.data = cast(shared(ubyte[])) read( req.uri[ 1 .. $ ] );
         }
     }
-    else if( match( req.uri, regex( "^/ajp*" ) ).empty() )
+    else if( match( req.uri, regex( "^/api/*" ) ).empty() )
     {
         resp.statusCode = 404;
         resp.statusMesg = "Not found (uri " ~ req.uri ~ " not supported)";
@@ -146,6 +157,8 @@ Response handleRequest( Request req, string type )
     }
     else
     {
+        debug writefln( "(D) request data length %d", req.data.length );
+
         resp.statusCode = 200;
         resp.statusMesg = "OK";
 
