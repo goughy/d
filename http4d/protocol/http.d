@@ -8,27 +8,18 @@ import util.util;
 import core.sys.posix.signal;
 
 enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
-string[] Headers = [ "", //dummy entry
-                        "accept",
-                        "accept-charset",
-                        "accept-encoding",
-                        "accept-language",
-                        "authorization",
-                        "connection",
-                        "content-type",
-                        "content-length",
-                        "cookie",
-                        "cookie2",
-                        "host",
-                        "pragma",
-                        "referer",
-                        "user-agent" ];
 
-enum TIMEOUT_USEC = 500;
-enum CHUNK_SIZE   = 2048; //try to get at least Content-Length header in first chunk
-bool running = false;
+enum TIMEOUT_USEC   = 500;
+enum CHUNK_SIZE     = 2048; //try to get at least Content-Length header in first chunk
+bool running        = false;
 
-enum SERVER_HEADER = "HTTP-D/1.0";
+enum SERVER_HEADER  = "Server";
+enum SERVER_DESC    = "HTTP-D/1.0";
+enum NEWLINE        = "\r\n";
+enum HTTP_10        = "HTTP/1.0";
+enum HTTP_11        = "HTTP/1.1";
+
+
 
 // --------------------------------------------------------------------------------
 
@@ -61,7 +52,7 @@ public:
 
     shared(Response) getResponse()
     {
-        Response resp = new Response( connection, protocol ); //bind the response to the reqest connection
+        shared Response resp = cast(shared) new Response( connection, protocol ); //bind the response to the reqest connection
         if( "Connection" in headers )
             resp.addHeader( "Connection", getHeader( "Connection" ) );
 
@@ -88,12 +79,11 @@ public:
     string[string]  headers;
     ubyte[]         data;
 
-    Response addHeader( string k, string v )
+    shared(Response) addHeader( string k, string v )
     {
-        headers[ capHeader( k.dup ) ] = v.idup;
+        headers[ capHeader( k.dup ) ] = v;
         return this;
     }
-
 }
 
 // ------------------------------------------------------------------------- //
@@ -109,19 +99,11 @@ interface HttpProcessor
 
 // ------------------------------------------------------------------------- //
 
-ubyte[] readChunk( Socket s )
+ubyte[] readChunk( Socket s, ulong len = CHUNK_SIZE )
 {
     ubyte[] buf;
-    buf.length = CHUNK_SIZE;
-    try
-    {
-        buf.length = s.receive( buf );
-    }
-    catch( Throwable t )
-    {
-        debug writefln( "(E) read failed: %s", t.toString() );
-        buf.length = 0;
-    }
+    buf.length = len;
+    buf.length = s.receive( buf ); //may propogate read exception
 
     if( buf.length == 0 ) //eof
         throw new Exception( "client closed connection (0 bytes read)" );
@@ -133,12 +115,12 @@ ubyte[] readChunk( Socket s )
 
 // ------------------------------------------------------------------------- //
 
-Tuple!(Request,ulong) parseHttp( ubyte[] buf )
+Tuple!(Request,ulong) parseHttpHeaders( ubyte[] buf )
 {
     Request req = new Request();
     ulong reqLen = 0UL;
     
-    auto res = findSplit( buf, "\r\n" );
+    auto res = findSplit( buf, NEWLINE );
     //first line should be OP URL PROTO
     auto line  = splitter( res[ 0 ], ' ' );
 
@@ -149,7 +131,7 @@ Tuple!(Request,ulong) parseHttp( ubyte[] buf )
     req.protocol = (cast(char[]) line.front).idup;
 
 //    writefln( "Length of remaining buffer is %d", res[ 2 ].length );
-    for( res = findSplit( res[ 2 ], "\r\n" ); res[ 0 ].length > 0; )
+    for( res = findSplit( res[ 2 ], NEWLINE ); res[ 0 ].length > 0; )
     {
         auto hdr = findSplit( res[ 0 ], ": " );
 //        debug writefln( "Header split = %s: %s", to!string( hdr[ 0 ] ), to!string( hdr[ 2 ] ) );
@@ -162,7 +144,7 @@ Tuple!(Request,ulong) parseHttp( ubyte[] buf )
             if( key == "Content-Length" )
                 reqLen = to!ulong( val );
         }
-        res = findSplit( res[ 2 ], "\r\n" );
+        res = findSplit( res[ 2 ], NEWLINE );
     }
 
     req.data = cast(shared ubyte[]) res[ 2 ];
@@ -172,12 +154,26 @@ Tuple!(Request,ulong) parseHttp( ubyte[] buf )
 
 // ------------------------------------------------------------------------- //
 
-ubyte[] convertResponse( Response r )
+ulong findChunkLen( ubyte[] data )
+{
+    auto res = findSplit( data, NEWLINE );
+    if( res[ 0 ].length == 0 )
+        return 0; //could not locate line termination...
+
+    //res[0] is a hex encoded length identifer
+
+    return hexToULong( res[ 0 ] );
+}
+
+// ------------------------------------------------------------------------- //
+
+ubyte[] toHttpResponse( Response r )
 {
     auto buf = appender!(ubyte[])();
     buf.reserve( 512 );
 
-    buf.put( cast(ubyte[]) "HTTP/1.1 " );
+    buf.put( cast(ubyte[]) HTTP_11 );
+    buf.put( ' ' );
 
     buf.put( cast(ubyte[]) to!string( r.statusCode ) );
     buf.put( ' ' );
@@ -185,20 +181,20 @@ ubyte[] convertResponse( Response r )
     buf.put( '\r' );
     buf.put( '\n' );
 
-    r.addHeader( "Server", SERVER_HEADER );
-    if( ("Date" in r.headers) is null )
+    r.addHeader( SERVER_HEADER, SERVER_DESC );
+    if( !("Date" in r.headers) )
     {
         long now = time( null );
         r.addHeader( "Date", to!string( asctime( gmtime( & now ) ) )[0..$-1] );
     }
 
-    if( ("Connection" in r.headers) !is null )
+    if( "Connection" in r.headers )
     {
-        if( r.protocol.toLower == "http/1.0" )
+        if( r.protocol.toUpper == HTTP_10 )
             r.addHeader( "Connection", "Keep-Alive" );
     }
 
-    if( ("Content-Length" in r.headers) is null )
+    if( !("Content-Length" in r.headers) && !isChunked( r ) )
         r.addHeader( "Content-Length", to!string( r.data.length ) );
 
     foreach( k,v; r.headers )
@@ -257,7 +253,7 @@ public:
 
     void close()
     {
-        debug writefln( "Closing connection 1 %s (%s)", id, to!string( _socket.handle() ) );
+        debug writefln( "Closing connection 1 %s (%s)", id, to!string( cast(int) _socket.handle() ) );
         try
         {
             if( _socket.isAlive )
@@ -275,21 +271,28 @@ public:
 
     Request read()
     {
-        ubyte [] httpChunk = readChunk( _socket );
+        ubyte [] httpChunk = readChunk( _socket, _expectedRead == 0 ? CHUNK_SIZE : _expectedRead );
         switch( _state )
         {
             case Flags.CONNECTED: //first chunk read from socket - parse headers
-                auto r = parseHttp( httpChunk );
+                auto r = parseHttpHeaders( httpChunk );
                 _lastReq = r[ 0 ];
                 _lastReq.connection = id;
-                _expectedRead = r[ 1 ];
+                if( isChunked( _lastReq ) )
+                {
+                    //TODO: chunked reading...
+                    ulong chunkLen = findChunkLen( cast(ubyte[]) _lastReq.data );
+                }
+                else
+                    _expectedRead = r[ 1 ];
+
                 _state   = _expectedRead == 0 ? _state & ~Flags.READING : _state | Flags.READING;
                 break;
 
             case Flags.READING:
                 _lastReq.data ~= httpChunk;
                 _expectedRead -= httpChunk.length;
-                if( _expectedRead == 0 )
+                if( _expectedRead <= 0 )
                     _state = _state & ~Flags.READING;
                 break;
 
@@ -335,7 +338,7 @@ public:
             return; //don't add more info if we're closing...
         }
 //        dump( r );
-        _lastResp ~= convertResponse( r );
+        _lastResp ~= toHttpResponse( r );
         _state |= Flags.WRITING;
         if( ("Connection" in r.headers) !is null && r.headers[ "Connection" ].toLower == "close" )
             _state |= Flags.CLOSING;
@@ -375,7 +378,6 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
 
     InternetAddress bindAddr = new InternetAddress( address, port );
 
-    //TODO: loop accepting all available connections...
     void doAccept( Socket s )
     {
         try
@@ -394,7 +396,7 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
                 allConns[ conn.id ] = conn;
             }
         }
-        catch( SocketException se ) {}
+        catch( SocketException se ) {} //break on error
     }
 
     void doRead( Connection c ) 
@@ -503,6 +505,11 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
         {
             proc.onIdle();
         }
+        catch( OwnerTerminated ot )
+        {
+            writeln( "Owner terminated, exiting" );
+            running = false;
+        }
         catch( Throwable t )
         {
             writeln( "Exception processing idle: " ~ t.toString );
@@ -580,7 +587,7 @@ public:
         onLog( "Protocol exiting (ASYNC mode)" );
     }
 
-    void onRequest( Request req )
+    void onRequest( shared(Request) req )
     {
         send( tid, req );
     }
@@ -590,15 +597,7 @@ public:
         receiveTimeout( dur!"msecs"(0), 
                 ( int i )
                 {
-                    switch( i )
-                    {
-                        case 1:
-                            running = false;
-                            break;
-
-                        default:
-                            break;
-                    }
+                    running = (i == 1);
                 },
                 ( Response resp ) 
                 { 
@@ -679,7 +678,7 @@ private:
 Method toMethod( string m )
 {
     //enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
-    switch( m.toLower )
+    switch( m.toLower() )
     {
         case "get":
             return Method.GET;
@@ -706,7 +705,7 @@ Method toMethod( string m )
 
 // ------------------------------------------------------------------------- //
 
-void dump( Request r )
+void dump( shared(Request) r )
 {
     writeln( "Connection: ", r.connection.idup );
     writeln( "Method    : ", r.method );
@@ -752,4 +751,31 @@ string capHeader( char[] hdr )
             up = true;
     }
     return hdr.idup;
+}
+
+// ------------------------------------------------------------------------- //
+
+bool isChunked(T)( T r )
+{
+    return "Transfer-Encoding" in r.headers &&
+        r.headers[ "Transfer-Encoding" ].toLower == "chunked";
+}
+
+// ------------------------------------------------------------------------- //
+
+ulong hexToULong( ubyte[] d )
+{
+    ulong val = 0;
+    int pow = 1;
+    foreach( u; std.range.retro( d ) )
+    {
+        val += (isDigit( u ) ? u - '0' : u - ('A' - 10) ) * pow;
+        pow *= 16;
+    }
+    return val;
+}
+
+unittest
+{
+    assert( hexToULong( ['3','1','C'] ) == 796 );
 }

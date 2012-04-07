@@ -408,7 +408,7 @@ public:
 
     void close()
     {
-        debug writefln( "Closing connection %s (%s)", id, to!string( _socket.handle() ) );
+        debug writefln( "Closing connection %s (%s)", id, to!string( cast(int) _socket.handle() ) );
         try
         {
             if( _socket.isAlive )
@@ -730,30 +730,6 @@ Method toMethod( ubyte m )
             break;
     }
     return Method.UNKNOWN;
-}
-
-// ------------------------------------------------------------------------- //
-
-void dump( Response resp )
-{
-    writeln( "Response from " ~ resp.connection );
-    writefln( "\t%d %s", resp.statusCode, resp.statusMesg );
-}
-
-// ------------------------------------------------------------------------- //
-
-void dump( Request req, string title = "" )
-{
-    if( title.length > 0 )
-        writeln( title );
-
-    writefln( "AJP: %s %s %s", to!string( req.method ), req.uri, req.protocol );
-    writeln( "Headers:" );
-    foreach( k, v; req.headers )
-        writefln( "\t%s = %s", k, v );
-    writeln( "Attributes:" );
-    foreach( k, v; req.attrs )
-        writefln( "\t%s = %s", k, v );
 }
 
 // ------------------------------------------------------------------------- //

@@ -6,6 +6,7 @@ import protocol.http, protocol.ajp, protocol.mongrel2;
 
 import core.sys.posix.signal;
 
+
 auto debugLvl = 0;
 auto quiet    = false;
 
@@ -45,6 +46,12 @@ extern(C) void sigint_handler( int sig_no )
 {
     if( sig_no == SIGINT )
     {
+        if( shutdown == true )
+        {
+            //force quit! this is the second time we've been asked
+            writeln( "FORCING EXIT..." );
+            std.c.stdlib.exit( 1 );
+        }
         shutdown = true;
         writeln( "SIGINT - shutdown in process" );
         if( tid != Tid.init )
@@ -73,6 +80,8 @@ int main( string[] args )
             "ajp", &ajp,
             "zmq", &zmq );
 
+//    writefln( "1C = %d", hexToULong( cast(ubyte[])"031C".dup ) );
+
     sigaction_t action;
     action.sa_handler = &sigint_handler;
     sigaction( SIGINT, &action, null );
@@ -98,7 +107,7 @@ int main( string[] args )
         {
             try
             {
-                receiveTimeout( dur!"msecs"( 1000 ),
+                receive( 
                         ( string s )
                         {
                             writefln( "MAIN: %s", s );
@@ -122,7 +131,6 @@ int main( string[] args )
     
     writeln( "Bye" );
     return 0;
-    
 }
 
 // ------------------------------------------------------------------------- //
@@ -131,7 +139,7 @@ int main( string[] args )
 int idx = 0;
 Response handleRequest( Request req, string type )
 {
-    writeln( "Handling HTTP request for URI: " ~ req.uri );
+    debug writeln( "Handling HTTP request for URI: " ~ req.uri );
 //    writeln( to!string( idx ) );
 //    dump( req );
 
@@ -163,7 +171,7 @@ Response handleRequest( Request req, string type )
         resp.statusMesg = "OK";
 
         resp.addHeader( "Content-Type", "text/html; charset=utf-8" );
-        resp.addHeader( "Connection", "close" );
+//        resp.addHeader( "Connection", "close" );
         //    resp.addHeader( "X-DAJP", "goughy" );
 
         if( req.method == Method.GET )
@@ -172,7 +180,7 @@ Response handleRequest( Request req, string type )
                 "<html><head><title>DAJP - just what we were after</title>\n"
                 "<body>\n"
                 "   <h1>OK</h1>\n"
-                "   <h3>Apparently these _are_ the " ~ type ~ " droids you're looking for (" ~ to !string( idx++ ) ~ ")</h3>\n"
+                "   <h3>" ~ type ~ " " ~ to !string( idx++ ) ~ "</h3>\n"
                 "</body></html>\n".dup;
             resp.data = cast(shared ubyte[]) d;
         }

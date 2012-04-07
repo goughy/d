@@ -1,20 +1,121 @@
 
 module protocol.mongrel2;
 
+import std.ascii;
 public import protocol.http;
 import std.stdio, std.string, std.conv, std.stdint, std.array, std.range,
-       std.datetime, std.algorithm, std.concurrency, std.typecons, std.random;
-import std.c.time;
+       std.datetime, std.algorithm, std.concurrency, std.typecons, std.random, std.utf;
 import util.logger, util.util;
 import cjson.cJSON;
 import zmq;
 
-void * zmqContext;
 string zmqIdentity;
+
+// ------------------------------------------------------------------------- //
 
 void postLog( Tid tid, string s )
 {
     send( tid, "[MONGREL2] " ~ s );
+}
+
+// ------------------------------------------------------------------------- //
+
+class ZMQMsg
+{
+    zmq_msg_t * msg;
+    char[] msg_data;
+
+    this()
+    {
+        msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
+        zmq_msg_init( msg );
+    }
+
+    this( char[] buf )
+    {
+        msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
+        zmq_msg_init_size( msg, buf.length );
+        std.c.string.memcpy( zmq_msg_data( msg ), buf.ptr, buf.length );
+    }
+
+    ~this()
+    {
+        destroy();
+    }
+
+    @property ulong length()
+    {
+        return (msg is null) ? 0UL : zmq_msg_size( msg );
+    }
+
+    @property char[] data()
+    {
+        if( msg_data.length == 0 && msg !is null )
+        {
+            msg_data.length = zmq_msg_size( msg );
+            if( msg_data.length > 0 )
+                std.c.string.memcpy( msg_data.ptr, zmq_msg_data( msg ), msg_data.length );
+
+            destroy();
+        }
+        return msg_data;
+    }
+
+    zmq_msg_t * opCast( T: zmq_msg_t * )()
+    {
+        return msg;
+    }
+
+    void destroy()
+    {
+        if( msg !is null )
+            std.c.stdlib.free( msg );
+
+        msg = null;
+    }
+}
+
+// ------------------------------------------------------------------------- //
+
+class ZMQConnection
+{
+    static void * zmqCtx;
+    static string zmqIdent;
+
+    static this()
+    {
+        zmqCtx = zmq_init( 1 );
+    }
+
+    void * zmqSock;
+
+    this( string addr, int type )
+    {
+        zmqSock = zmq_socket( zmqCtx, type );
+        zmq_connect( zmqSock, addr.toStringz );
+    }
+
+    ~this()
+    {
+    }
+
+    ZMQMsg receive()
+    {
+        ZMQMsg msg = new ZMQMsg();
+        zmq_recv( zmqSock, cast(zmq_msg_t*)msg, 0 );
+        return msg;
+    }
+
+    void send( ZMQMsg msg )
+    {
+        zmq_send( zmqSock, cast(zmq_msg_t *) msg, 0 ); //send it off
+        msg.destroy();
+    }
+
+    void * opCast( T : void * )()
+    {
+        return zmqSock;
+    }
 }
 
 // ------------------------------------------------------------------------- //
@@ -25,9 +126,6 @@ void zmqServe( string address, ushort port, Tid tid )
     zmq_version( &major, &minor, &patch );
     postLog(  tid, format( "zmq_version = %d.%d.%d", major, minor, patch ) );
 
-    zmqContext = zmq_init( 1 );
-
-    void * zmqReceive = zmq_socket( zmqContext, ZMQ_PULL );
 
     char[ 20 ] ident;
     for( auto i = 0; i < 20; ++i )
@@ -35,9 +133,7 @@ void zmqServe( string address, ushort port, Tid tid )
 
     zmqIdentity = ident.idup;
     writeln( "Identity: ", ident );
-    zmq_setsockopt( zmqReceive, ZMQ_IDENTITY, cast(char *) zmqIdentity.toStringz, zmqIdentity.length );
-
-    void * zmqPublish = zmq_socket( zmqContext, ZMQ_PUB );
+//    zmq_setsockopt( zmqReceive, ZMQ_IDENTITY, cast(char *) zmqIdentity.toStringz, zmqIdentity.length );
 
     string addrPull = format( "tcp://%s:%d", address, port );
     string addrPub  = format( "tcp://%s:%d", address, port - 1 );
@@ -45,39 +141,27 @@ void zmqServe( string address, ushort port, Tid tid )
     postLog( tid, format( "Pub address %s", addrPub ) );
 //    zmq_bind( zmqReceive, addr.toStringz );
 
-    zmq_connect( zmqReceive, addrPull.toStringz );
-    zmq_connect( zmqPublish, addrPub.toStringz );
+    ZMQConnection zmqReceive = new ZMQConnection( addrPull, ZMQ_PULL );
+    ZMQConnection zmqPublish = new ZMQConnection( addrPub, ZMQ_PUB );
 
     bool done = false;
     while( !done )
     {
-        zmq_msg_t * msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
-        zmq_msg_init( msg );
-        zmq_recv( zmqReceive, msg, 0 );
+        ZMQMsg msg = zmqReceive.receive();
+        if( msg is null )
+            continue;
 
-        char[] data;
-        data.length = zmq_msg_size( msg );
-        std.c.string.memcpy( data.ptr, zmq_msg_data( msg ), data.length );
-        std.c.stdlib.free( msg );
-        debug dumpHex( data );
+        debug dumpHex( msg.data );
 
-        Request req = parseMongrelRequest( data );
-        if( req !is null )
+        shared(Request) req = parseMongrelRequest( msg.data );
+        if( req !is null && !isDisconnect( req ) )
             send( tid, req );
 
 
-        receiveTimeout( dur!"msecs"( 10 ),
+        receiveTimeout( dur!"msecs"( 100 ),
                 ( int i )
                 {
-                    switch( i )
-                    {
-                        case 1:
-                            done = true;
-                            break;
-
-                        default:
-                            break;
-                    }
+                    done = (i == 1);
                 },
                 ( Response resp ) 
                 { 
@@ -85,8 +169,7 @@ void zmqServe( string address, ushort port, Tid tid )
                     msg = toMongrelResponse( resp );
                     if( msg !is null )
                     {
-                        zmq_send( zmqPublish, msg, 0 ); //send it off
-                        std.c.stdlib.free( msg );
+                        zmqPublish.send( msg );
                     }
                 } );
     }
@@ -101,9 +184,9 @@ void zmqServe( string address, ushort port, Response delegate(Request) dg )
 
 // ------------------------------------------------------------------------- //
 
-Request parseMongrelRequest( char[] data )
+shared(Request) parseMongrelRequest( char[] data )
 {
-    Request req = new Request();
+    shared(Request) req = new shared(Request);
 
     auto tmp       = findSplitBefore( data, " " ); 
     req.connection = tmp[ 0 ].idup;
@@ -134,7 +217,7 @@ Request parseMongrelRequest( char[] data )
         {
             string key = capHeader( cast(char[]) obj.string[ 0 .. std.c.string.strlen( obj.string ) ] );
             req.headers[ key ] =  to!string( obj.valuestring );
-            if( key == "Method" )
+            if( key == "Method" ) //TODO: Handle JSON method from Mongrel
                 req.method = toMethod( req.headers[ key ] );
             else if( key == "Version" )
                 req.protocol = req.headers[ key ];
@@ -144,6 +227,10 @@ Request parseMongrelRequest( char[] data )
 //    char * s = cJSON_Print( headerJSON );
 //    printf( "%s\n", s );
 //    std.c.stdlib.free( s );
+
+    if( req.method == Method.UNKNOWN && req.headers[ "Method" ] == "JSON" )
+        parseJSONBody( req );
+
     cJSON_Delete( headerJSON );
 
     debug dump( req );
@@ -152,11 +239,11 @@ Request parseMongrelRequest( char[] data )
 
 // ------------------------------------------------------------------------- //
 
-zmq_msg_t * toMongrelResponse( Response resp )
+ZMQMsg toMongrelResponse( Response resp )
 {
     //serialise the response as appropriate
     auto buf = appender!(ubyte[])();
-    buf.reserve( 512 );
+    buf.reserve( 512 + resp.data.length );
 
     //retrieve the mongrel connection id from the connection identifier
     char[] conn = resp.connection.dup;
@@ -176,49 +263,30 @@ zmq_msg_t * toMongrelResponse( Response resp )
     buf.put( ' ' );
 
     //now add the HTTP payload
-    buf.put( cast(ubyte[]) "HTTP/1.1 " );
-    buf.put( cast(ubyte[]) to!string( resp.statusCode ) );
-    buf.put( ' ' );
-    buf.put( cast(ubyte[]) resp.statusMesg );
-    buf.put( '\r' );
-    buf.put( '\n' );
+    buf.put( toHttpResponse( resp ) );
 
-    resp.addHeader( "Server", SERVER_HEADER );
-    if( ("Date" in resp.headers) is null )
-    {
-        long now = time( null );
-        resp.addHeader( "Date", to!string( asctime( gmtime( & now ) ) )[0..$-1] );
-    }
-
-    if( ("Connection" in resp.headers) !is null )
-    {
-        if( resp.protocol.toLower == "http/1.0" )
-            resp.addHeader( "Connection", "Keep-Alive" );
-    }
-
-    if( ("Content-Length" in resp.headers) is null )
-        resp.addHeader( "Content-Length", to!string( resp.data.length ) );
-
-    foreach( k,v; resp.headers )
-    {
-        buf.put( cast(ubyte[]) k );
-        buf.put( ':' );
-        buf.put( ' ' );
-        buf.put( cast(ubyte[]) v );
-        buf.put( '\r' );
-        buf.put( '\n' );
-    }
-
-    buf.put( '\r' );
-    buf.put( '\n' );
-    if( resp.data.length > 0 )
-        buf.put( cast(ubyte[]) resp.data );
-
-    zmq_msg_t * msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
-    zmq_msg_init_size( msg, buf.data.length );
-    std.c.string.memcpy( zmq_msg_data( msg ), buf.data.ptr, buf.data.length );
+    ZMQMsg msg = new ZMQMsg( cast(char[])buf.data );
     debug dumpHex( cast(char[]) buf.data );
     return msg;
+}
+
+// ------------------------------------------------------------------------- //
+
+void parseJSONBody( ref shared(Request) req )
+{
+    //now decode header as JSON packet
+    auto json = cJSON_Parse( cast(char*) req.data.ptr );
+
+    //walk the JSON object and build our Request
+    int len = cJSON_GetArraySize( json );
+    for( int i = 0; i < len; ++i )
+    {
+        cJSON * obj = cJSON_GetArrayItem( json, i );
+        if( obj != null )
+            req.attrs[ to!string( obj.string ) ] =  to!string( obj.valuestring );
+    }
+
+    cJSON_Delete( json );
 }
 
 // ------------------------------------------------------------------------- //
@@ -231,6 +299,14 @@ Tuple!(char[], char[]) parseNetString( char[] data )
     assert( tmp[ 1 ][ len ] == ',' );
 
     return tuple( tmp[ 1 ][ 0 .. len ], tmp[ 1 ][ len + 1 .. $ ] );
+}
+
+// ------------------------------------------------------------------------- //
+
+bool isDisconnect( shared(Request) req )
+{
+    return req is null || ( req.headers[ "Method" ] == "JSON" && 
+            req.attrs[ "type" ] == "disconnect" );
 }
 
 // ------------------------------------------------------------------------- //

@@ -1,17 +1,20 @@
 
-solution "dmemcache"
+solution "memcached"
 	configurations { "debug" }
 
     configuration { "debug", "gmake" }
         buildoptions { "-gc" }
 
+    project "memcached"
+        kind "StaticLib"
+        language "D"
+		files { "memcache.d" }
+		flags { "Symbols", "ExtraWarnings" }
+
 	project "test"
 		kind "ConsoleApp"
 		language "D"
-		files { "memcache.d", "test.d" }
-
-		configuration "debug"
-			defines "debug"
-            platforms "x64"
-			flags { "Symbols", "ExtraWarnings", "Test" }
+		files { "test.d" }
+        links { "libmemcached.a" }
+		flags { "Symbols", "ExtraWarnings" }
 

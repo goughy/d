@@ -1,7 +1,7 @@
-require "d"
+--require "d"
 
 solution "http4d"
-    configurations { "debug", "release", "doc" }
+    configurations { "debug", "release", "test" }
 --    location "build"
     includedirs { ".", "./cjson", "/data/devel-ext/dlang/deimos/ZeroMQ" } 
 --    libdirs { "." }
@@ -13,8 +13,9 @@ solution "http4d"
     configuration "release"
         flags { "Optimize" }
 
-    configuration "doc"
-        buildoptions "-D"
+    configuration "test"
+        buildoptions "-unittest"
+        flags { "Symbols", "ExtraWarnings" }
 
     project "cJSON"
         kind "StaticLib"
