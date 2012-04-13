@@ -6,11 +6,12 @@ import std.socket, std.algorithm, std.typecons, std.array, std.c.time;
 import util.util;
 
 import core.sys.posix.signal;
+import zmq;
 
 enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
 
-enum TIMEOUT_USEC   = 500;
-enum CHUNK_SIZE     = 2048; //try to get at least Content-Length header in first chunk
+enum TIMEOUT_USEC   = 1000;
+enum CHUNK_SIZE     = 1024; //try to get at least Content-Length header in first chunk
 bool running        = false;
 
 enum SERVER_HEADER  = "Server";
@@ -18,8 +19,6 @@ enum SERVER_DESC    = "HTTP-D/1.0";
 enum NEWLINE        = "\r\n";
 enum HTTP_10        = "HTTP/1.0";
 enum HTTP_11        = "HTTP/1.1";
-
-
 
 // --------------------------------------------------------------------------------
 
@@ -92,32 +91,475 @@ interface HttpProcessor
 {
     void onInit();
     void onLog( string s );
-    void onRequest( Request req );
-    void onIdle();
+    void onRequest( shared(Request) req );
+    bool onIdle();  //return true if we processed something
     void onExit();
 }
 
 // ------------------------------------------------------------------------- //
 
-ubyte[] readChunk( Socket s, ulong len = CHUNK_SIZE )
-{
-    ubyte[] buf;
-    buf.length = len;
-    buf.length = s.receive( buf ); //may propogate read exception
+HttpConnection[int] httpConns;
 
-    if( buf.length == 0 ) //eof
-        throw new Exception( "client closed connection (0 bytes read)" );
-    
-//    writefln( "Received %d bytes", buf.length );
-    debug dumpHex( cast(char[]) buf, "initial read" );
-    return buf;
+class HttpConnection
+{
+public:
+
+    this( Socket s )
+    {
+        sock = s;
+        ident = sock.remoteAddress().toString();
+//        ident = to!string( cast(int) sock.handle() );
+    }
+
+    ~this()
+    {
+        debug writefln( "Destroying connection fd %d", sock.handle() );
+    }
+
+    @property string id()       { return ident; }
+    @property Socket socket()   { return sock; }
+
+    void close()
+    {
+        try
+        {
+            sock.close();
+        }
+        catch( Throwable t ) {} //ignored
+    }
+
+    shared(Request) read()
+    {
+        ubyte[] buf;
+        buf.length = CHUNK_SIZE;
+        long num = sock.receive( buf ); //may propogate read exception
+        if( num > 0 )
+        {
+            buf.length = num;
+            readBuf ~= buf;
+            debug dumpHex( cast(char[]) buf, "(D) read data (num = " ~to!string( num ) ~ ")" );
+            auto resp = parseHttpHeaders( readBuf );
+            if( resp[ 1 ] == 0 ) //no more data necessary
+            {
+                readBuf.length = 0;
+                resp[ 0 ].connection = to!string( id );
+                return resp[ 0 ]; //return null if we have more data to read...
+            }
+        }
+        else if( num == 0 )
+            throw new SocketException( "EOF on " ~ to!string( id ) ~ " (" ~ to!string( num ) ~ " bytes read)" );
+        else
+            throw new SocketException( "Error on " ~ to!string( id ) ~ " (returned " ~ to!string( num ) ~ ")" );
+
+        return null;
+    }
+
+    ulong write()
+    {
+        ulong num = sock.send( writeBuf );
+        if( num == writeBuf.length )
+            writeBuf.length = 0;
+        else
+            writeBuf = writeBuf[ num .. $ ];
+
+        debug writefln( "(D) Wrote %d bytes (%d left) to connection %s", num, writeBuf.length, id );
+        return num;
+    }
+
+    void add( shared(Response) r )
+    {
+        writeBuf ~= toHttpResponse( r );
+        debug writefln( "(D) Added response to connection %s, writeBuf length %d", id, writeBuf.length );
+
+    }
+
+    @property bool needsWrite() { return writeBuf.length > 0UL; }
+
+private:
+
+    string  ident;
+    ubyte[] readBuf;
+    ubyte[] writeBuf;
+    Socket  sock;
 }
 
 // ------------------------------------------------------------------------- //
 
-Tuple!(Request,ulong) parseHttpHeaders( ubyte[] buf )
+private void httpServeImpl( string address, ushort port, HttpProcessor proc )
 {
-    Request req = new Request();
+    proc.onInit();
+    running = true;
+
+    InternetAddress bindAddr = new InternetAddress( address, port );
+
+
+    //set up our listening socket...
+    Socket listenSock = new Socket( AddressFamily.INET, SocketType.STREAM );
+    try
+    {
+        listenSock.blocking( false );
+        listenSock.bind( bindAddr );
+        listenSock.listen( 100 );
+
+        proc.onLog( "Listening on " ~ bindAddr.toString() ~ ", fd " ~ to!string( cast(int) listenSock.handle() ) ~ ", queue length 100" );
+    }
+    catch( Throwable t )
+    {
+        proc.onLog( "Exception configuring listen listenSock: " ~ t.toString() );
+        return;
+    }
+
+    zmq_pollitem_t * listenItem()
+    {
+        zmq_pollitem_t * item = new zmq_pollitem_t;
+        item.fd     = listenSock.handle();
+        item.events = ZMQ_POLLIN;
+
+        return item;
+    }
+
+    zmq_pollitem_t * connItem( HttpConnection * pConn ) 
+    { 
+        zmq_pollitem_t * item = new zmq_pollitem_t;
+        item.fd     = pConn.socket.handle();
+        item.events = ZMQ_POLLIN;
+        if( pConn.needsWrite )
+            item.events |= ZMQ_POLLOUT;
+
+        return item;
+    }
+
+    /+++====++/
+    bool isListener( zmq_pollitem_t * item ) { return item.fd == listenSock.handle(); }
+
+    /+++====++/
+    bool onError( HttpConnection * pConn )
+    {
+        debug proc.onLog( "Error on connection " ~ to!string( pConn.id ) ~ " - closing" );
+        return false;
+    }
+
+    /+++====++/
+    HttpConnection onAccept()
+    {
+        try
+        {
+            Socket client = listenSock.accept();
+            client.blocking( false );
+            client.setOption( SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1 );
+
+            debug writefln( "(D) onAccept() new client fd %d - %s", cast(int) client.handle(), client.remoteAddress().toString() );
+            HttpConnection conn = new HttpConnection( client );
+            httpConns[ client.handle() ] = conn;
+            return conn;
+        }
+        catch( SocketAcceptException sae )
+        {
+//            debug writefln( "(D) onAccept(): %s", sae.toString() );
+        }
+        return null;
+    }
+
+    /+++====++/
+    bool onRead( HttpConnection * pConn )
+    {
+        debug writefln( "(D) Reading from connection %s", pConn.id );
+        shared(Request) req = pConn.read();
+        if( req !is null )
+            proc.onRequest( req );
+
+        return true;
+    }
+
+    /+++====++/
+    bool onWrite( HttpConnection * pConn )
+    {
+        return pConn.write() > 0L;
+    }
+
+    /+++====++/
+    void onClose( HttpConnection * pConn )
+    {
+        httpConns.remove( pConn.sock.handle() );
+        pConn.close();
+    }
+
+    HttpConnection tmp;
+
+    zmq_pollitem_t pitem[];
+    zmq_pollitem_t ptmp[];
+
+    pitem ~= *listenItem();
+
+    bool receivedData = false;
+    while( running )
+    {
+        ptmp.length = 0;
+
+        int num = zmq_poll( pitem.ptr, cast(int) pitem.length, receivedData ? 0 : TIMEOUT_USEC / 1000 );
+        if( num > 0 || receivedData )
+        {
+            for( long i = 0; i < pitem.length; i++ )
+            {
+                bool keep = true;
+                debug writefln( "(D) pitem[ %d ], fd %d, events %d, revents %d", 
+                        i, pitem[ i ].fd, pitem[ i ].events, pitem[ i ].revents );
+
+                HttpConnection * pConn = pitem[ i ].fd in httpConns;
+                try
+                {
+                    //handle listen socket
+                    if( pitem[ i ].fd == listenSock.handle() )
+                    {
+                        if( (pitem[ i ].revents & ZMQ_POLLERR) != 0 )
+                        {
+                            proc.onLog( "Error on listen socket - aborting" );
+                            running = false;
+                        }
+                        else if( (pitem[ i ].revents & ZMQ_POLLIN) != 0 )
+                        {
+                            tmp = onAccept();
+                            if( tmp !is null )
+                                pConn = &tmp;
+                        }
+                        ptmp ~= *listenItem(); //keep the listen socket in the runlist
+                    }
+                    else //handle normal sockets
+                    {
+                        //error checking
+                        if( (pitem[ i ].revents & ZMQ_POLLERR) != 0 )
+                            keep = false; // onError( pConn );
+                        else
+                        {
+                            //read checking
+                            if( (pitem[ i ].revents & ZMQ_POLLIN) != 0 )
+                                keep = onRead( pConn );
+
+                            //write checking
+                            if( (pitem[ i ].revents & ZMQ_POLLOUT) != 0 )
+                                keep = onWrite( pConn );
+                        }
+                    }
+                }
+                catch( SocketException e )
+                {
+                    debug proc.onLog( "Exception occurred on fd " ~ to!string( pitem[ i ].fd ) ~ 
+                            ", error " ~ to!string( e.errorCode )  ~ " - " ~ e.toString() );
+                    keep = false;
+                }
+
+                //merge runlist
+                if( pConn !is null )
+                {
+                    if( keep )
+                        ptmp ~= *connItem( pConn );
+                    else
+                        onClose( pConn );
+                }
+            }
+            debug writefln( "(D) Swapping runlist old[ %d ] <- new[ %d ]", pitem.length, ptmp.length );
+            pitem = ptmp;
+//            foreach( i, z; pitem )
+//                debug writefln( "\tpitem[ %d ], fd %d, events %d, revents %d, socket %x", 
+//                    i, z.fd, z.events, z.revents, z.socket );
+
+        }
+
+        //do idle processing
+        receivedData = proc.onIdle();
+    }
+
+    proc.onExit();
+}
+
+// ------------------------------------------------------------------------- //
+
+/**
+ * Thread entry point for HTTP processing
+ */
+
+void httpServe( string address, ushort port, Tid tid )
+{
+    httpServeImpl( address, port, new TidProcessor( tid, "[HTTP-D] " ) );
+}
+
+// ------------------------------------------------------------------------- //
+
+void httpServe( string address, ushort port, shared(Response) delegate(shared(Request)) dg )
+{
+    httpServeImpl( address, port, new DelegateProcessor( dg, "[HTTP-D] " ) );
+}
+
+// ------------------------------------------------------------------------- //
+
+class TidProcessor : HttpProcessor
+{
+public:
+
+    this( Tid t, string logPrefix = "[HTTP] " )
+    {
+        tid = t;
+        prefix = logPrefix;
+    }
+
+    void onInit()
+    {
+        onLog( "Protocol initialising (ASYNC mode)" );
+    }
+
+    void onLog( string s )
+    {
+        if( tid != Tid.init )
+            send( tid, prefix ~ s );
+    }
+
+    void onExit()
+    {
+        onLog( "Protocol exiting (ASYNC mode)" );
+    }
+
+    void onRequest( shared(Request) req )
+    {
+        send( tid, req );
+    }
+
+    bool onIdle()
+    {
+        bool found = false;
+
+        receiveTimeout( dur!"usecs"(TIMEOUT_USEC), 
+                ( int i )
+                {
+                    running = (i != 1);
+                },
+                ( shared(Response) resp ) 
+                { 
+                    foreach( conn; httpConns )
+                    {
+                        if( conn.id == resp.connection )
+                        {
+                            conn.add( resp );
+                            found = true;
+                            break;
+                        }
+                    }
+                } );
+
+        return found;
+    }
+
+private:
+
+    Tid tid;
+    string prefix;
+}
+
+// ------------------------------------------------------------------------- //
+
+class DelegateProcessor : HttpProcessor
+{
+public:
+
+    this( shared(Response) delegate(shared(Request)) d, string logPrefix = "[HTTP] " )
+    {
+        dg = d;
+        prefix = logPrefix;
+    }
+
+    void onInit()
+    {
+        onLog( "Protocol initialising (SYNC mode)" );
+    }
+
+    void onLog( string s )
+    {
+        writeln( prefix ~ s );
+    }
+
+    void onExit()
+    {
+        onLog( "Protocol exiting (SYNC mode)" );
+    }
+
+    void onRequest( shared(Request) req )
+    {
+        shared Response resp = dg( req );
+        if( resp !is null )
+        {
+            debug writefln( "(D) processing received response" );
+            foreach( conn; httpConns )
+            {
+                if( conn.id == resp.connection )
+                {
+                    conn.add( resp );
+                    hadData = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    bool onIdle()
+    {
+        //noop for sync
+        bool tmp = hadData;
+        hadData = false;
+        return tmp;
+    }
+
+private:
+
+    shared(Response) delegate(shared(Request)) dg;
+    string prefix;
+    bool   hadData;
+}
+
+// ------------------------------------------------------------------------- //
+
+Method toMethod( string m )
+{
+    //enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
+    switch( m.toLower() )
+    {
+        case "get":
+            return Method.GET;
+        case "post":
+            return Method.POST;
+        case "head":
+            return Method.HEAD;
+        case "options":
+            return Method.OPTIONS;
+        case "put":
+            return Method.PUT;
+        case "delete":
+            return Method.DELETE;
+        case "trace":
+            return Method.TRACE;
+        case "connect":
+            return Method.CONNECT;
+        default:
+            break;
+    }
+
+    return Method.UNKNOWN;
+}
+
+// ------------------------------------------------------------------------- //
+
+zmq_pollitem_t * toZmqItem( HttpConnection c )
+{
+    zmq_pollitem_t * i = new zmq_pollitem_t;
+    i.fd     = c.socket.handle();
+    i.events = ZMQ_POLLIN;
+
+    return i;
+}
+
+// ------------------------------------------------------------------------- //
+
+Tuple!(shared(Request),ulong) parseHttpHeaders( ubyte[] buf )
+{
+    shared Request req = new shared(Request)();
     ulong reqLen = 0UL;
     
     auto res = findSplit( buf, NEWLINE );
@@ -154,20 +596,7 @@ Tuple!(Request,ulong) parseHttpHeaders( ubyte[] buf )
 
 // ------------------------------------------------------------------------- //
 
-ulong findChunkLen( ubyte[] data )
-{
-    auto res = findSplit( data, NEWLINE );
-    if( res[ 0 ].length == 0 )
-        return 0; //could not locate line termination...
-
-    //res[0] is a hex encoded length identifer
-
-    return hexToULong( res[ 0 ] );
-}
-
-// ------------------------------------------------------------------------- //
-
-ubyte[] toHttpResponse( Response r )
+ubyte[] toHttpResponse( shared(Response) r )
 {
     auto buf = appender!(ubyte[])();
     buf.reserve( 512 );
@@ -218,493 +647,6 @@ ubyte[] toHttpResponse( Response r )
 
 // ------------------------------------------------------------------------- //
 
-interface Connection
-{
-public:
-
-    enum Flags { CONNECTED = 0x0, READING = 0x01, WRITING = 0x02, CLOSING = 0x04 };
-
-    @property string id();
-    @property uint flags();
-    @property Socket socket();
-
-    void close();
-    Request read();
-    ulong write();
-    void add( Response r );
-}
-
-// ------------------------------------------------------------------------- //
-
-class HttpConnection : Connection
-{
-public:
-
-    this( Socket _c )
-    {
-        _socket = _c;
-        _state  = Flags.CONNECTED;
-        _id     = _c.remoteAddress().toString();
-    }
-
-    @property string id()           { return _id; }
-    @property Socket socket()       { return _socket; }
-    @property uint flags()          { return _state; }
-
-    void close()
-    {
-        debug writefln( "Closing connection 1 %s (%s)", id, to!string( cast(int) _socket.handle() ) );
-        try
-        {
-            if( _socket.isAlive )
-                _socket.shutdown( SocketShutdown.BOTH );
-
-            _socket.close();
-        }
-        catch( Throwable t ) 
-        {
-            writefln( "(E) socket close failed on connection %s: %s", _id, t.toString() );
-        }
-
-        _state = Flags.CLOSING;
-    }
-
-    Request read()
-    {
-        ubyte [] httpChunk = readChunk( _socket, _expectedRead == 0 ? CHUNK_SIZE : _expectedRead );
-        switch( _state )
-        {
-            case Flags.CONNECTED: //first chunk read from socket - parse headers
-                auto r = parseHttpHeaders( httpChunk );
-                _lastReq = r[ 0 ];
-                _lastReq.connection = id;
-                if( isChunked( _lastReq ) )
-                {
-                    //TODO: chunked reading...
-                    ulong chunkLen = findChunkLen( cast(ubyte[]) _lastReq.data );
-                }
-                else
-                    _expectedRead = r[ 1 ];
-
-                _state   = _expectedRead == 0 ? _state & ~Flags.READING : _state | Flags.READING;
-                break;
-
-            case Flags.READING:
-                _lastReq.data ~= httpChunk;
-                _expectedRead -= httpChunk.length;
-                if( _expectedRead <= 0 )
-                    _state = _state & ~Flags.READING;
-                break;
-
-            default:
-                break;
-        }
-        return (_state & Flags.READING) == 0 ? _lastReq : null;
-    }
-
-    //write any pending data to the socket, and return number of bytes left to write
-    ulong write()
-    {
-        if( _lastWritePos == _lastResp.length )
-        {
-            _state &= ~Flags.WRITING;
-            return 0UL; //nothing to send
-        }
-
-        long num = _socket.send( _lastResp[ _lastWritePos .. $ ] );
-        debug writefln( "Wrote %d bytes to connection %s", num, id );
-        if( num < 0 )
-        {
-            _state &= ~Flags.WRITING;
-            return 0UL;
-        }
-
-        _lastWritePos += num;
-        if( _lastWritePos >= _lastResp.length )
-        {
-            _lastResp.length = _lastWritePos = 0;
-            _state &= ~Flags.WRITING;
-            return 0UL;
-        }
-        _state |= Flags.WRITING;
-        return _lastResp.length - _lastWritePos;
-    }
-
-    void add( Response r )
-    {
-        if( _state & Flags.CLOSING )
-        {
-            debug writefln( "Connection %s is marked for closing - not accepting next response", id );
-            return; //don't add more info if we're closing...
-        }
-//        dump( r );
-        _lastResp ~= toHttpResponse( r );
-        _state |= Flags.WRITING;
-        if( ("Connection" in r.headers) !is null && r.headers[ "Connection" ].toLower == "close" )
-            _state |= Flags.CLOSING;
-//        _lastWritePos = 0;
-    }
-
-private:
-
-    string  _id;
-    Socket  _socket;
-    uint    _state;
-    Request _lastReq;
-    ubyte[] _lastResp;
-    ulong   _lastWritePos;
-    ulong   _expectedRead;
-}
-
-Connection[string] allConns;
-
-// ------------------------------------------------------------------------- //
-
-private void httpServeImpl( string address, ushort port, HttpProcessor proc )
-{
-//    sigset_t set;
-//    sigemptyset( & set );
-//    sigaddset( &set, SIGUSR1 );
-//
-//    pthread_sigmask( SIG_UNBLOCK, & set, null );
-//
-
-    proc.onInit();
-    running = true;
-
-    SocketSet readSet = new SocketSet();
-    SocketSet writeSet = new SocketSet();
-    SocketSet exceptSet = new SocketSet();
-
-    InternetAddress bindAddr = new InternetAddress( address, port );
-
-    void doAccept( Socket s )
-    {
-        try
-        {
-            while( true )
-            {
-                Socket client = s.accept();
-                client.blocking( false );
-
-                client.setOption( SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1 );
-//                linger lin = { 1, 1 };
-//                client.setOption( SocketOptionLevel.SOCKET, SocketOption.LINGER, lin );
-
-                Connection conn = new HttpConnection( client );// id is allocated in the constructor
-                proc.onLog( "accepted new client connection from " ~ conn.id );
-                allConns[ conn.id ] = conn;
-            }
-        }
-        catch( SocketException se ) {} //break on error
-    }
-
-    void doRead( Connection c ) 
-    {
-        debug writeln( "(D) Reading from " ~ c.id );
-         Request req = c.read();
-         if( req !is null )
-             proc.onRequest( req );
-    }
-
-    void doWrite( Connection c ) 
-    {
-        debug writeln( "(D) Writing to " ~ c.id );
-        c.write();
-    }
-
-    void doExcept( Connection c ) 
-    {
-        debug writefln( "Error on connection %s", c.id );
-        c.close();
-    }
-
-    //set up our listening socket...
-    Socket listenSock;
-    try
-    {
-        listenSock = new Socket( AddressFamily.INET, SocketType.STREAM );
-        listenSock.bind( bindAddr );
-        listenSock.listen( 100 );
-        listenSock.blocking( false );
-        proc.onLog( "listening on " ~ bindAddr.toString() ~ ", queue length 100" );
-    }
-    catch( SocketException se )
-    {
-        debug writefln( se.toString() );
-        throw se;
-    }
-
-    string[] closedConns;
-    while( running )
-    {
-        readSet.reset();
-        readSet.add( listenSock );
-        writeSet.reset();
-
-        closedConns.clear();
-        foreach( c; allConns )
-        {
-//            writefln( "Processing select state for connection: %s", c.id );
-            //if we've finished writing, and we're marked for closing - go ahead and close
-            if( c.flags & Connection.Flags.CLOSING )
-            {
-                if( (c.flags & Connection.Flags.WRITING) == 0 )
-                {
-                    debug writefln( "Connection %s is added to closing conns", c.id );
-                    closedConns ~= c.id;
-                    continue;
-                }
-            }
-
-            if( (c.flags & Connection.Flags.CLOSING) == 0 ) //don't read any more data on a closing socket
-                readSet.add( c.socket );
-            if( c.flags & Connection.Flags.WRITING )
-                writeSet.add( c.socket );
-
-            //debug writefln( "(D) %s: %08x", c.id, c.flags );
-        }
-
-        //close connections found wanting
-        //this can't be done as part of the iteration over the connections
-        //above or below as it explodes the iterator (sorry, range) if
-        //items are removed during iteration.  There is probably a way to do so, though...
-        foreach( s; closedConns )
-        {
-            allConns.remove( s );
-            proc.onLog( "removing closed connection " ~ s ~ " (" ~ to!string( allConns.length ) ~ ")" );
-        }
-
-        int num = Socket.select( readSet, writeSet, exceptSet, TIMEOUT_USEC );
-        if( num > 0 )
-        {
-            debug writefln( "%d/%d", num, allConns.length );
-            if( readSet.isSet( listenSock ) )
-                doAccept( listenSock );
-
-            foreach( c; allConns )
-            {
-                try
-                {
-                    if( readSet.isSet( c.socket ) )
-                        doRead( c );
-                    if( writeSet.isSet( c.socket ) )
-                        doWrite( c );
-                    if( exceptSet.isSet( c.socket ) )
-                        doExcept( c );
-                }
-                catch( Exception e )
-                {
-                    proc.onLog( e.toString() );
-                    c.close();
-                }
-            }
-        }
-
-        try
-        {
-            proc.onIdle();
-        }
-        catch( OwnerTerminated ot )
-        {
-            writeln( "Owner terminated, exiting" );
-            running = false;
-        }
-        catch( Throwable t )
-        {
-            writeln( "Exception processing idle: " ~ t.toString );
-        }
-    }
-
-    proc.onLog( "shutting down " ~ to!string( allConns.length ) ~ " connection(s)" );
-
-    //shutdown remaining sockets...
-    foreach( c; allConns )
-    {
-        try
-        {
-            c.close();
-        }
-        catch( Throwable t ) {} //ignored
-    }
- 
-    try
-    {
-        listenSock.close();
-    }
-    catch( Throwable t )
-    {
-        writeln( "Failed to close listen socket: " ~ t.toString() );
-    }
-
-    proc.onExit();
-
-}
-
-// ------------------------------------------------------------------------- //
-
-/**
- * Thread entry point for HTTP processing
- */
-
-void httpServe( string address, ushort port, Tid tid )
-{
-    httpServeImpl( address, port, new TidProcessor( tid, "[HTTP-D] " ) );
-}
-
-// ------------------------------------------------------------------------- //
-
-void httpServe( string address, ushort port, Response delegate(Request) dg )
-{
-    httpServeImpl( address, port, new DelegateProcessor( dg, "[HTTP-D] " ) );
-}
-
-// ------------------------------------------------------------------------- //
-
-class TidProcessor : HttpProcessor
-{
-public:
-
-    this( Tid t, string logPrefix = "[HTTP] " )
-    {
-        tid = t;
-        prefix = logPrefix;
-    }
-
-    void onInit()
-    {
-        onLog( "Protocol initialising (ASYNC mode)" );
-    }
-
-    void onLog( string s )
-    {
-        if( tid != Tid.init )
-            send( tid, prefix ~ s );
-    }
-
-    void onExit()
-    {
-        onLog( "Protocol exiting (ASYNC mode)" );
-    }
-
-    void onRequest( shared(Request) req )
-    {
-        send( tid, req );
-    }
-
-    void onIdle()
-    {
-        receiveTimeout( dur!"msecs"(0), 
-                ( int i )
-                {
-                    running = (i == 1);
-                },
-                ( Response resp ) 
-                { 
- //                   writefln( "(D) processing received response" );
-                    Connection conn = allConns[ resp.connection ];
-                    if( conn is null )
-                    {
-                        writefln( "Failed to resolve connection %s", resp.connection );
-                        return;
-                    }
-                    conn.add( resp );
-//                    dump( resp );
-                } );
-    }
-
-private:
-
-    Tid tid;
-    string prefix;
-}
-
-// ------------------------------------------------------------------------- //
-
-class DelegateProcessor : HttpProcessor
-{
-public:
-
-    this( Response delegate(Request) d, string logPrefix = "[HTTP] " )
-    {
-        dg = d;
-        prefix = logPrefix;
-    }
-
-    void onInit()
-    {
-        onLog( "Protocol initialising (SYNC mode)" );
-    }
-
-    void onLog( string s )
-    {
-        writeln( prefix ~ s );
-    }
-
-    void onExit()
-    {
-        onLog( "Protocol exiting (SYNC mode)" );
-    }
-
-    void onRequest( Request req )
-    {
-        Response resp = dg( req );
-        if( resp !is null )
-        {
-            debug writefln( "(D) processing received response" );
-            Connection conn = allConns[ resp.connection ];
-            if( conn is null )
-            {
-                writefln( "Failed to resolve connection %s", resp.connection );
-                return;
-            }
-            conn.add( resp );
-        }
-    }
-
-    void onIdle()
-    {
-        //noop for sync
-    }
-
-private:
-
-    Response delegate(Request) dg;
-    string prefix;
-}
-
-// ------------------------------------------------------------------------- //
-
-Method toMethod( string m )
-{
-    //enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
-    switch( m.toLower() )
-    {
-        case "get":
-            return Method.GET;
-        case "post":
-            return Method.POST;
-        case "head":
-            return Method.HEAD;
-        case "options":
-            return Method.OPTIONS;
-        case "put":
-            return Method.PUT;
-        case "delete":
-            return Method.DELETE;
-        case "trace":
-            return Method.TRACE;
-        case "connect":
-            return Method.CONNECT;
-        default:
-            break;
-    }
-
-    return Method.UNKNOWN;
-}
-
-// ------------------------------------------------------------------------- //
-
 void dump( shared(Request) r )
 {
     writeln( "Connection: ", r.connection.idup );
@@ -721,7 +663,7 @@ void dump( shared(Request) r )
 
 // ------------------------------------------------------------------------- //
 
-void dump( Response r, string title = "" )
+void dump( shared(Response) r, string title = "" )
 {
     if( title.length > 0 )
         writeln( title );

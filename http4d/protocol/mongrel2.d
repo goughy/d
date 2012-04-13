@@ -102,7 +102,7 @@ class ZMQConnection
     ZMQMsg receive()
     {
         ZMQMsg msg = new ZMQMsg();
-        zmq_recv( zmqSock, cast(zmq_msg_t*)msg, 0 );
+        zmq_recv( zmqSock, cast(zmq_msg_t*) msg, 0 );
         return msg;
     }
 
@@ -120,7 +120,7 @@ class ZMQConnection
 
 // ------------------------------------------------------------------------- //
 
-void zmqServe( string address, ushort port, Tid tid )
+void mongrel2Serve( string address, ushort port, Tid tid )
 {
     int major, minor, patch;
     zmq_version( &major, &minor, &patch );
@@ -165,8 +165,8 @@ void zmqServe( string address, ushort port, Tid tid )
                 },
                 ( Response resp ) 
                 { 
-                    debug dump( resp );
-                    msg = toMongrelResponse( resp );
+                    debug dump( cast(shared) resp );
+                    msg = toMongrelResponse( cast(shared) resp );
                     if( msg !is null )
                     {
                         zmqPublish.send( msg );
@@ -177,7 +177,7 @@ void zmqServe( string address, ushort port, Tid tid )
 
 // ------------------------------------------------------------------------- //
 
-void zmqServe( string address, ushort port, Response delegate(Request) dg )
+void mongrel2Serve( string address, ushort port, shared(Response) delegate(shared(Request)) dg )
 {
 //    httpServeImpl( address, port, new DelegateProcessor( dg, "[HTTP-D] " ) );
 }
@@ -239,7 +239,7 @@ shared(Request) parseMongrelRequest( char[] data )
 
 // ------------------------------------------------------------------------- //
 
-ZMQMsg toMongrelResponse( Response resp )
+ZMQMsg toMongrelResponse( shared(Response) resp )
 {
     //serialise the response as appropriate
     auto buf = appender!(ubyte[])();

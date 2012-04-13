@@ -2,13 +2,13 @@
 
 solution "http4d"
     configurations { "debug", "release", "test" }
---    location "build"
-    includedirs { ".", "./cjson", "/data/devel-ext/dlang/deimos/ZeroMQ" } 
---    libdirs { "." }
+    includedirs { ".", "./cjson" } 
 
     configuration "debug"
---        buildoptions "-v"
         flags { "Symbols", "ExtraWarnings" }
+
+    configuration { "debug", "D" }
+        buildoptions "-gc"
 
     configuration "release"
         flags { "Optimize" }
@@ -31,6 +31,7 @@ solution "http4d"
     project "test"
         kind "ConsoleApp"
         language "D"
-        files { "main.d" }
-        links { "http4d", "cJSON" }
-        linkoptions { "-L-lzmq" }
+        files { "test.d" }
+--        linkoptions "-L-L/usr/local/lib"
+        links { "http4d", "cJSON", "zmq" }
+

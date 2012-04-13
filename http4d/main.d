@@ -55,18 +55,21 @@ extern(C) void sigint_handler( int sig_no )
         shutdown = true;
         writeln( "SIGINT - shutdown in process" );
         if( tid != Tid.init )
+        {
+            writefln( "Sending shutdown" );
             send( tid, 1 );
+        }
     }
-    else if( sig_no == SIGUSR1 )
-        writeln( "SIGUSR1!");
 }
 
 // ------------------------------------------------------------------------- //
 
+void function( string address, ushort port, Tid tid ) asyncEntry;
+void function( string address, ushort port, shared(Response) delegate(shared(Request)) dg ) syncEntry;
 
 int main( string[] args )
 {
-    string addr = "127.0.0.1";
+    string addr = "0.0.0.0";
     ushort port = 8888;
     bool   sync = false;
     bool   http = true;
@@ -86,20 +89,19 @@ int main( string[] args )
     action.sa_handler = &sigint_handler;
     sigaction( SIGINT, &action, null );
 
-    void function( string address, ushort port, Tid tid ) asyncEntry;
-    void function( string address, ushort port, Response delegate(Request) dg ) syncEntry;
-
     if( sync )
-        syncEntry = zmq ? &zmqServe : (ajp ? &ajpServe : &httpServe);
+        syncEntry = zmq ? &mongrel2Serve : (ajp ? &ajpServe : &httpServe);
     else
-        asyncEntry = zmq ? &zmqServe : (ajp ? &ajpServe : &httpServe);
+        asyncEntry = zmq ? &mongrel2Serve : (ajp ? &ajpServe : &httpServe);
 
     if( sync )
+    {
             syncEntry( addr, port, 
-                    (Request req)
+                    (shared(Request) req)
                     {
                         return handleRequest( req, "sync" );
                     } );
+    }
     else
     {
         tid = spawnLinked( asyncEntry, addr, port, thisTid() );
@@ -112,7 +114,7 @@ int main( string[] args )
                         {
                             writefln( "MAIN: %s", s );
                         },
-                        ( Request req )         
+                        ( shared(Request) req )         
                         { 
                             send( tid, handleRequest( req, "async" ) );
                         },
@@ -137,14 +139,14 @@ int main( string[] args )
 
 
 int idx = 0;
-Response handleRequest( Request req, string type )
+shared(Response) handleRequest( shared(Request) req, string type )
 {
     debug writeln( "Handling HTTP request for URI: " ~ req.uri );
 //    writeln( to!string( idx ) );
-//    dump( req );
+    dump( req );
 
     //auto fn = pipe!( ok, header)
-    Response resp = req.getResponse();
+    shared Response resp = req.getResponse();
     //Response resp = new Response( req.connection );
     if( exists( req.uri[ 1 .. $ ] ) ) //strip leading '/'
     {

@@ -187,7 +187,7 @@ ubyte[] readAjpMsg( Socket client )
 
 // ------------------------------------------------------------------------- //
 
-ubyte[] convertResponse( Response r )
+ubyte[] convertResponse( shared(Response) r )
 {
     //for a response, we need to send an AJP13_SEND_HEADERS
     //followed by an AJP13_SEND_BODY_CHUNK
@@ -288,7 +288,7 @@ ubyte[] convertResponse( Response r )
 static ubyte[] PONG;
 static ubyte[] END;
 
-Connection[string] allConns;
+AjpConnection[string] allConns;
 
 static this()
 {
@@ -307,14 +307,14 @@ static this()
 
 // ------------------------------------------------------------------------- //
 
-Tuple!(Request,int) parseAjpForward( ubyte[] buf )
+Tuple!(shared(Request),int) parseAjpForward( ubyte[] buf )
 {
     debug writefln( "AJP forward message size = %d", buf.length );
     if( buf is null )
         throw new Exception( "AJP Message parse failure: buffer is NULL" );
 
     int pos  = 1;        //skip the 'type' byte - its already set
-    Request req = new Request();
+    shared Request req = new shared(Request)();
 
 //		type       = cast(PacketType) _buf[ pos++ ];
     req.method     = toMethod( buf[ pos++ ] );
@@ -391,20 +391,18 @@ Tuple!(Request,int) parseAjpForward( ubyte[] buf )
 
 // ------------------------------------------------------------------------- //
 
-class AjpConnection : Connection
+class AjpConnection
 {
 public:
 
     this( Socket _c )
     {
         _socket = _c;
-        _state  = Flags.CONNECTED;
         _id     = _c.remoteAddress().toString();
     }
 
     @property string id()     { return _id; }
     @property Socket socket() { return _socket; }
-    @property uint flags()    { return _state; }
 
     void close()
     {
@@ -420,89 +418,88 @@ public:
         {
             writefln( "(E) socket close failed on connection %s: %s", _id, t.toString() );
         }
-
-        _state = Flags.CLOSING;
     }
 
-    Request read()
+    shared(Request) read()
     {
-        if( _state & Flags.CLOSING )
-            throw new Exception( "Attempted to read from CLOSED connection " ~ _id );
-
-        debug writefln( "Reading next AJP packet from connection %s", id );
-        ubyte[] buf = readAjpMsg( _socket );
-        if( (_state & Flags.READING) == 0 )
-        {
-            debug writefln( "Received AJP message of %d bytes", buf.length );
-            if( buf[ 0 ] == PacketType.FORWARD )
-            {
-                debug dumpHex( cast(char[]) buf, "AJP REQUEST" );
-
-                Tuple!(Request,int) rt = parseAjpForward( cast(ubyte[]) buf );
-                _lastReq = rt[ 0 ];
-                _lastReadPos = rt[ 1 ];
-                _lastReq.connection = id;
-                if( _lastReq.data.length > 0 )
-                    _state |= Flags.READING;
-            }
-            else if( buf[ 0 ] == PacketType.C_PING )
-            {
-                debug writeln( "CPING received from server, send CPONG" );
-                _lastResp ~= PONG; //send PONG back upstream
-                _state |= Flags.WRITING;
-            }
-        }
-        else 
-        {
-            _lastReq.data = cast(shared ubyte[]) buf; //append POST data (if any)
-            _state &= ~Flags.READING;
-        }
-
-        return (_state & Flags.READING) > 0 ? null : _lastReq;
+//        if( _state & Flags.CLOSING )
+//            throw new Exception( "Attempted to read from CLOSED connection " ~ _id );
+//
+//        debug writefln( "Reading next AJP packet from connection %s", id );
+//        ubyte[] buf = readAjpMsg( _socket );
+//        if( (_state & Flags.READING) == 0 )
+//        {
+//            debug writefln( "Received AJP message of %d bytes", buf.length );
+//            if( buf[ 0 ] == PacketType.FORWARD )
+//            {
+//                debug dumpHex( cast(char[]) buf, "AJP REQUEST" );
+//
+//                Tuple!(shared(Request),int) rt = parseAjpForward( cast(ubyte[]) buf );
+//                _lastReq = rt[ 0 ];
+//                _lastReadPos = rt[ 1 ];
+//                _lastReq.connection = id;
+//                if( _lastReq.data.length > 0 )
+//                    _state |= Flags.READING;
+//            }
+//            else if( buf[ 0 ] == PacketType.C_PING )
+//            {
+//                debug writeln( "CPING received from server, send CPONG" );
+//                _lastResp ~= PONG; //send PONG back upstream
+//                _state |= Flags.WRITING;
+//            }
+//        }
+//        else 
+//        {
+//            _lastReq.data = cast(shared ubyte[]) buf; //append POST data (if any)
+//            _state &= ~Flags.READING;
+//        }
+//
+//        return (_state & Flags.READING) > 0 ? null : _lastReq;
+        return null;
     }
 
     //write any pending data to the socket, and return completion flag
     //true == finished writing, false == data left...
     ulong write()
     {
-        if( _lastWritePos == _lastResp.length )
-        {
-            _state &= ~Flags.WRITING;
-            return 0UL; //nothing to send
-        }
-
-        long num = _socket.send( _lastResp[ _lastWritePos .. $ ] );
-        debug writefln( "Wrote %d bytes to connection %s", num, id );
-        if( num < 0 )
-        {
-            _state &= ~Flags.WRITING;
-            return 0UL;
-        }
-
-        _lastWritePos += num;
-        if( _lastWritePos >= _lastResp.length )
-        {
-            _lastResp.length = _lastWritePos = 0;
-            _state &= ~Flags.WRITING;
-            return 0UL;
-        }
-        _state |= Flags.WRITING;
-        return _lastResp.length - _lastWritePos;
+//        if( _lastWritePos == _lastResp.length )
+//        {
+//            _state &= ~Flags.WRITING;
+//            return 0UL; //nothing to send
+//        }
+//
+//        long num = _socket.send( _lastResp[ _lastWritePos .. $ ] );
+//        debug writefln( "Wrote %d bytes to connection %s", num, id );
+//        if( num < 0 )
+//        {
+//            _state &= ~Flags.WRITING;
+//            return 0UL;
+//        }
+//
+//        _lastWritePos += num;
+//        if( _lastWritePos >= _lastResp.length )
+//        {
+//            _lastResp.length = _lastWritePos = 0;
+//            _state &= ~Flags.WRITING;
+//            return 0UL;
+//        }
+//        _state |= Flags.WRITING;
+//        return _lastResp.length - _lastWritePos;
+        return 0UL;
     }
 
-    void add( Response r )
+    void add( shared(Response) r )
     {
         debug dump( r );
         _lastResp ~= convertResponse( r );
-        _state |= Flags.WRITING;
+//        _state |= Flags.WRITING;
     }
 
 private:
 
     string  _id;
     Socket  _socket;
-    uint    _state;
-    Request _lastReq;
+    shared Request _lastReq;
     ubyte[] _lastResp;
     int     _lastWritePos;
     int     _lastReadPos;
@@ -534,16 +531,16 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
 //        linger lin = { 1, 500 };
 //        client.setOption( SocketOptionLevel.SOCKET, SocketOption.LINGER, lin );
 
-        Connection conn = new AjpConnection( client );// id is allocated in the constructor
+        AjpConnection conn = new AjpConnection( client );// id is allocated in the constructor
         proc.onLog( "accepted new client connection from " ~ conn.id );
         allConns[ conn.id ] = conn;
     }
 
-    void doRead( Connection c ) 
+    void doRead( AjpConnection c ) 
     {
         try
         {
-            Request req = c.read();
+            shared Request req = c.read();
             if( req !is null )
                 proc.onRequest( req );
         }
@@ -554,13 +551,13 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
         }
     }
 
-    void doWrite( Connection c ) 
+    void doWrite( AjpConnection c ) 
     {
         debug writefln( "Write set on connection %s", c.id );
         c.write();
     }
 
-    void doExcept( Connection c ) 
+    void doExcept( AjpConnection c ) 
     {
         debug writefln( "Error on connection %s", c.id );
         c.close();
@@ -582,57 +579,57 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
         throw se;
     }
 
-    string[] closedConns;
-    while( running )
-    {
-        readSet.reset();
-        readSet.add( listenSock );
-        writeSet.reset();
-
-        closedConns.clear();
-        foreach( c; allConns )
-        {
-            if( c.flags & Connection.Flags.CLOSING )
-            {
-                closedConns ~= c.id;
-                continue;
-            }
-
-            readSet.add( c.socket );
-            if( c.flags & Connection.Flags.WRITING )
-                writeSet.add( c.socket );
-        }
-
-        //close connections found wanting
-        //this can't be done as part of the iteration over the connections
-        //above or below as it explodes the iterator (sorry, range) if
-        //items are removed during iteration.  There is probably a way to do so, though...
-        foreach( s; closedConns )
-        {
-            proc.onLog( "removing closed connection " ~ s );
-            allConns.remove( s );
-        }
-
-        int num = Socket.select( readSet, writeSet, exceptSet, TIMEOUT_USEC );
-        if( num > 0 )
-        {
-            debug writefln( "%d/%d: ", num, allConns.length );
-            if( readSet.isSet( listenSock ) )
-                doAccept( listenSock );
-
-            foreach( c; allConns )
-            {
-                if( readSet.isSet( c.socket ) )
-                    doRead( c );
-                if( writeSet.isSet( c.socket ) )
-                    doWrite( c );
-                if( exceptSet.isSet( c.socket ) )
-                    doExcept( c );
-            }
-        }
-
-        proc.onIdle();
-    }
+//    string[] closedConns;
+//    while( running )
+//    {
+//        readSet.reset();
+//        readSet.add( listenSock );
+//        writeSet.reset();
+//
+//        closedConns.clear();
+//        foreach( c; allConns )
+//        {
+//            if( c.flags & Connection.Flags.CLOSING )
+//            {
+//                closedConns ~= c.id;
+//                continue;
+//            }
+//
+//            readSet.add( c.socket );
+//            if( c.flags & Connection.Flags.WRITING )
+//                writeSet.add( c.socket );
+//        }
+//
+//        //close connections found wanting
+//        //this can't be done as part of the iteration over the connections
+//        //above or below as it explodes the iterator (sorry, range) if
+//        //items are removed during iteration.  There is probably a way to do so, though...
+//        foreach( s; closedConns )
+//        {
+//            proc.onLog( "removing closed connection " ~ s );
+//            allConns.remove( s );
+//        }
+//
+//        int num = Socket.select( readSet, writeSet, exceptSet, TIMEOUT_USEC );
+//        if( num > 0 )
+//        {
+//            debug writefln( "%d/%d: ", num, allConns.length );
+//            if( readSet.isSet( listenSock ) )
+//                doAccept( listenSock );
+//
+//            foreach( c; allConns )
+//            {
+//                if( readSet.isSet( c.socket ) )
+//                    doRead( c );
+//                if( writeSet.isSet( c.socket ) )
+//                    doWrite( c );
+//                if( exceptSet.isSet( c.socket ) )
+//                    doExcept( c );
+//            }
+//        }
+//
+//        proc.onIdle();
+//    }
 
     proc.onLog( "shutting down " ~ to!string( allConns.length ) ~ " connection(s)" );
 
@@ -671,7 +668,7 @@ void ajpServe( string address, ushort port, Tid tid )
 
 // ------------------------------------------------------------------------- //
 
-void ajpServe( string address, ushort port, Response delegate(Request) dg )
+void ajpServe( string address, ushort port, shared(Response) delegate(shared(Request)) dg )
 {
     ajpServeImpl( address, port, new DelegateProcessor( dg, "[AJP-D] " ) );
 }
