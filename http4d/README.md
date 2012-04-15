@@ -1,4 +1,3 @@
-
 HTTP4D
 ======
 
@@ -6,27 +5,30 @@ HTTP4D provides an easy entry point for providing embedded HTTP support
 into any D application.  The library provides endpoints for the following
 
 Supported Protocols:
-    - HTTP (internal implementation)
-    - AJP  (internal implementation but incomplete)
-    - Mongrel2 (Relies on the ZMQ library)
+
+ * HTTP (internal implementation)
+ * AJP  (internal implementation but incomplete)
+ * Mongrel2 (Relies on the ZMQ library)
 
 It provides a very simple interface using request/response style making it very
 easy to dispatch, route and handle a variety of web requests.
 
 Example:
 
-    import std.stdio;
-    import protocol.http;
+```d
+import std.stdio;
+import protocol.http;
 
-    int main( string[] args )
-    {
-        httpServe( "127.0.0.1", 8888,
-                    (req) => req.getResponse().
-                                status( 200 ).
-                                header( "Content-Type", "text/html" ).
-                                content( "<html><head></head><body>Processed ok</body></html>" ) );
-        return 0;
-    }
+int main( string[] args )
+{
+    httpServe( "127.0.0.1", 8888,
+                (req) => req.getResponse().
+                            status( 200 ).
+                            header( "Content-Type", "text/html" ).
+                            content( "<html><head></head><body>Processed ok</body></html>" ) );
+    return 0;
+}
+```
     
 See the 'examples' folder for more.
 
@@ -50,11 +52,11 @@ to a D application using this library incredibly easily. It also allows a
 system architecture to be built using multiple independent processes
 communicating via HTTP.
 
-The library to process >23k requests per second using localhost on my 8GB 
+As it stands the library is able to process >23k requests per second using localhost on my 8GB 
 quad core development machine **without** any additional tuning.
 
 BUILDING
-========
+==
 The build system I use is a modified (modified with D support) version of
 [Premake](https://bitbucket.org/goughy/premake-dev-d/) and has been developed
 solely using this system.
