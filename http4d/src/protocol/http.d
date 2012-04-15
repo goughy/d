@@ -1,14 +1,27 @@
+/**
+
+HTTP4D provides an easy entry point for providing embedded HTTP support
+into any D application.
+
+This module provides a simple HTTP implementation
+
+License: $(LINK2 http://boost.org/LICENSE_1_0.txt, Boost License 1.0).
+
+Authors: $(LINK2 https://github.com/goughy, Andrew Gough)
+
+Source: $(LINK2 https://github.com/goughy/d/tree/master/http4d, github.com)
+*/
+
 
 module protocol.http;
 
 import std.string, std.concurrency, std.uri, std.conv, std.stdio, std.ascii;
 import std.socket, std.algorithm, std.typecons, std.array, std.c.time;
-import util.util;
 
 import core.sys.posix.signal;
 import zmq;
 
-enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
+public import protocol.httpapi;
 
 enum TIMEOUT_USEC   = 1000;
 enum CHUNK_SIZE     = 1024; //try to get at least Content-Length header in first chunk
@@ -20,69 +33,91 @@ enum NEWLINE        = "\r\n";
 enum HTTP_10        = "HTTP/1.0";
 enum HTTP_11        = "HTTP/1.1";
 
-// --------------------------------------------------------------------------------
+/**
+ * Delegate signature required to be implemented by any handler
+ */
 
-shared class Request
+alias shared(Response) delegate(shared(Request)) RequestDelegate;
+
+// ------------------------------------------------------------------------- //
+
+/**
+ * Synchronous HTTP request handler entry point.  Once executed, control
+ * of the event loop stays in the library and control only returns to 
+ * user code via the execution of the provided delegate.  This interface
+ * provides the lowest execution overhead (as opposed to the asynchronous
+ * interface below).
+ * Example:
+ * ---
+ * import std.stdio;
+ * import protocol.http;
+ * 
+ * int main( string[] args )
+ * {
+ *     httpServe( "127.0.0.1", 8888,
+ *                 (req) => req.getResponse().
+ *                             status( 200 ).
+ *                             header( "Content-Type", "text/html" ).
+ *                             content( "<html><head></head><body>Processed ok</body></html>" ) );
+ *     return 0;
+ * }
+ * ---
+ */
+
+void httpServe( string address, ushort port, RequestDelegate dg )
 {
-public:
-
-    this( string id = "" )
-    {
-        connection = id;
-    }
-
-    string          connection;
-    Method          method;
-    string          protocol;
-    string          uri;
-    string[string]  headers;
-    string[string]  attrs;
-    ubyte[]         data;
-
-    string getHeader( string k )
-    {
-        return headers[ capHeader( k.dup ) ];
-    }
-
-    string getAttr( string k )
-    {
-        return attrs[ k.toLower ];
-    }
-
-    shared(Response) getResponse()
-    {
-        shared Response resp = cast(shared) new Response( connection, protocol ); //bind the response to the reqest connection
-        if( "Connection" in headers )
-            resp.addHeader( "Connection", getHeader( "Connection" ) );
-
-        return resp;
-    }
+    httpServeImpl( address, port, new DelegateProcessor( dg, "[HTTP-D] " ) );
 }
 
 // ------------------------------------------------------------------------- //
 
-shared class Response
+/**
+ * Asynchronous thread entry point for HTTP processing.  This interface requires
+ * a $(D_PSYMBOL Tid) with a $(D_PSYMBOL Request) delegate clause.
+ *
+ * Example:
+ * ---
+ * import std.stdio, std.concurrency;
+ * import protocol.http;
+ * 
+ * int main( string[] args )
+ * {
+ *     Tid tid = spawnLinked( httpServe, "127.0.0.1", 8888, thisTid() );
+ *
+ *     bool shutdown = false;
+ *     while( !shutdown )
+ *     {
+ *         try
+ *         {
+ *             receive( 
+ *                 ( shared(Request) req )         
+ *                 { 
+ *                     send( tid, handleReq( req ) );
+ *                 },
+ *                 ( LinkTerminated e ) { shutdown = true; }
+ *            );
+ *        }
+ *        catch( Throwable t )
+ *        {
+ *            writefln( "Caught exception waiting for msg: " ~ t.toString );
+ *        }
+ *    }
+ * }
+ * 
+ * shared(Response) handleReq( shared(Request) req )
+ * {
+ *      return req.getResponse().
+ *              status( 200 ).
+ *              header( "Content-Type", "text/html" ).
+ *              content( "<html><head></head><body>Processed ok</body></html>" );
+ * }
+ *
+ * ---
+ */
+
+void httpServe( string address, ushort port, Tid tid )
 {
-public:
-    
-    this( string id = "", string proto  = "" )
-    {
-        connection = id;
-        protocol = proto;
-    }
-
-    string          connection;
-    string          protocol;
-    int             statusCode;
-    string          statusMesg;
-    string[string]  headers;
-    ubyte[]         data;
-
-    shared(Response) addHeader( string k, string v )
-    {
-        headers[ capHeader( k.dup ) ] = v;
-        return this;
-    }
+    httpServeImpl( address, port, new TidProcessor( tid, "[HTTP-D] " ) );
 }
 
 // ------------------------------------------------------------------------- //
@@ -108,7 +143,6 @@ public:
     {
         sock = s;
         ident = sock.remoteAddress().toString();
-//        ident = to!string( cast(int) sock.handle() );
     }
 
     ~this()
@@ -168,12 +202,14 @@ public:
 
     void add( shared(Response) r )
     {
-        writeBuf ~= toHttpResponse( r );
+        auto x = toHttpResponse( r );
+        writeBuf ~= x[ 0 ];
+        isClosing = x[ 1 ];
         debug writefln( "(D) Added response to connection %s, writeBuf length %d", id, writeBuf.length );
-
     }
 
     @property bool needsWrite() { return writeBuf.length > 0UL; }
+    @property bool needsClose() { return isClosing; }
 
 private:
 
@@ -181,6 +217,7 @@ private:
     ubyte[] readBuf;
     ubyte[] writeBuf;
     Socket  sock;
+    bool    isClosing;
 }
 
 // ------------------------------------------------------------------------- //
@@ -191,7 +228,6 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
     running = true;
 
     InternetAddress bindAddr = new InternetAddress( address, port );
-
 
     //set up our listening socket...
     Socket listenSock = new Socket( AddressFamily.INET, SocketType.STREAM );
@@ -302,8 +338,8 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
             for( long i = 0; i < pitem.length; i++ )
             {
                 bool keep = true;
-                debug writefln( "(D) pitem[ %d ], fd %d, events %d, revents %d", 
-                        i, pitem[ i ].fd, pitem[ i ].events, pitem[ i ].revents );
+//                debug writefln( "(D) pitem[ %d ], fd %d, events %d, revents %d", 
+//                        i, pitem[ i ].fd, pitem[ i ].events, pitem[ i ].revents );
 
                 HttpConnection * pConn = pitem[ i ].fd in httpConns;
                 try
@@ -357,12 +393,7 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
                         onClose( pConn );
                 }
             }
-            debug writefln( "(D) Swapping runlist old[ %d ] <- new[ %d ]", pitem.length, ptmp.length );
-            pitem = ptmp;
-//            foreach( i, z; pitem )
-//                debug writefln( "\tpitem[ %d ], fd %d, events %d, revents %d, socket %x", 
-//                    i, z.fd, z.events, z.revents, z.socket );
-
+            pitem = ptmp; //swap poll lists
         }
 
         //do idle processing
@@ -370,24 +401,6 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
     }
 
     proc.onExit();
-}
-
-// ------------------------------------------------------------------------- //
-
-/**
- * Thread entry point for HTTP processing
- */
-
-void httpServe( string address, ushort port, Tid tid )
-{
-    httpServeImpl( address, port, new TidProcessor( tid, "[HTTP-D] " ) );
-}
-
-// ------------------------------------------------------------------------- //
-
-void httpServe( string address, ushort port, shared(Response) delegate(shared(Request)) dg )
-{
-    httpServeImpl( address, port, new DelegateProcessor( dg, "[HTTP-D] " ) );
 }
 
 // ------------------------------------------------------------------------- //
@@ -516,36 +529,6 @@ private:
 
 // ------------------------------------------------------------------------- //
 
-Method toMethod( string m )
-{
-    //enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
-    switch( m.toLower() )
-    {
-        case "get":
-            return Method.GET;
-        case "post":
-            return Method.POST;
-        case "head":
-            return Method.HEAD;
-        case "options":
-            return Method.OPTIONS;
-        case "put":
-            return Method.PUT;
-        case "delete":
-            return Method.DELETE;
-        case "trace":
-            return Method.TRACE;
-        case "connect":
-            return Method.CONNECT;
-        default:
-            break;
-    }
-
-    return Method.UNKNOWN;
-}
-
-// ------------------------------------------------------------------------- //
-
 zmq_pollitem_t * toZmqItem( HttpConnection c )
 {
     zmq_pollitem_t * i = new zmq_pollitem_t;
@@ -596,7 +579,7 @@ Tuple!(shared(Request),ulong) parseHttpHeaders( ubyte[] buf )
 
 // ------------------------------------------------------------------------- //
 
-ubyte[] toHttpResponse( shared(Response) r )
+Tuple!(ubyte[],bool) toHttpResponse( shared(Response) r )
 {
     auto buf = appender!(ubyte[])();
     buf.reserve( 512 );
@@ -617,8 +600,10 @@ ubyte[] toHttpResponse( shared(Response) r )
         r.addHeader( "Date", to!string( asctime( gmtime( & now ) ) )[0..$-1] );
     }
 
+    bool needsClose = false;
     if( "Connection" in r.headers )
     {
+        needsClose = r.headers[ "Connection" ] == "close";
         if( r.protocol.toUpper == HTTP_10 )
             r.addHeader( "Connection", "Keep-Alive" );
     }
@@ -642,57 +627,7 @@ ubyte[] toHttpResponse( shared(Response) r )
         buf.put( cast(ubyte[]) r.data );
 
     debug dumpHex( cast(char[]) buf.data, "HTTP RESPONSE" );
-    return buf.data;
-}
-
-// ------------------------------------------------------------------------- //
-
-void dump( shared(Request) r )
-{
-    writeln( "Connection: ", r.connection.idup );
-    writeln( "Method    : ", r.method );
-    writeln( "Protocol  : ", r.protocol.idup );
-    writeln( "URI       : ", r.uri.idup );
-
-    foreach( k, v; r.headers )
-        writeln( "\t", k.idup, ": ", v.idup );
-
-    foreach( k, v; r.attrs )
-        writeln( "\t", k.idup, ": ", v.idup );
-}
-
-// ------------------------------------------------------------------------- //
-
-void dump( shared(Response) r, string title = "" )
-{
-    if( title.length > 0 )
-        writeln( title );
-
-    writeln( "Connection: ", r.connection.idup );
-    writeln( "Status    : ", r.statusCode, " ", r.statusMesg.idup );
-
-    foreach( k, v; r.headers )
-        writeln( "\t", k.idup, ": ", v.idup );
-
-    dumpHex( cast(char[]) r.data );
-}
-
-// ------------------------------------------------------------------------- //
-
-string capHeader( char[] hdr )
-{
-    bool up = true; //uppercase first letter
-    foreach( i, char c; hdr ) 
-    {
-        if( isAlpha( c ) )
-        {
-            hdr[ i ] = cast(char)(up ? toUpper( c ) : toLower( c ));
-            up = false;
-        }
-        else
-            up = true;
-    }
-    return hdr.idup;
+    return tuple( buf.data, needsClose );
 }
 
 // ------------------------------------------------------------------------- //

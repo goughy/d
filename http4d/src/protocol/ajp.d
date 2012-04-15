@@ -4,7 +4,6 @@ public import protocol.http;
 
 import std.stdio, std.string, std.conv, std.stdint, std.array,
        std.file, std.datetime, std.socket, std.concurrency, std.typecons;
-import util.logger, util.util;
 
 enum TIMEOUT_USEC = 500;
 enum MAX_REQLEN   = 1024 * 1024 * 1; //1MB

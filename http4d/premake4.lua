@@ -2,7 +2,8 @@
 
 solution "http4d"
     configurations { "debug", "release", "test" }
-    includedirs { ".", "./cjson" } 
+    includedirs { "src", "src/cjson", "src/deimos" } 
+    buildoptions "-Dddoc"
 
     configuration "debug"
         flags { "Symbols", "ExtraWarnings" }
@@ -20,18 +21,41 @@ solution "http4d"
     project "cJSON"
         kind "StaticLib"
         language "C"
-        files { "cjson/*.c" }
+        files { "src/cjson/*.c" }
 
     project "http4d"
         kind "StaticLib"
         language "D"
-        files { "*.d", "protocol/*.d", "util/*.d" }
+        files { "*.d", "src/*.d", "src/protocol/*.d" }
         excludes { "main.d" }
 
     project "test"
         kind "ConsoleApp"
         language "D"
         files { "test.d" }
---        linkoptions "-L-L/usr/local/lib"
+        links { "http4d", "cJSON", "zmq" }
+
+    project "ex1"
+        kind "ConsoleApp"
+        language "D"
+        files { "examples/ex1.d" }
+        links { "http4d", "cJSON", "zmq" }
+
+    project "ex2"
+        kind "ConsoleApp"
+        language "D"
+        files { "examples/ex2.d" }
+        links { "http4d", "cJSON", "zmq" }
+
+    project "ex3"
+        kind "ConsoleApp"
+        language "D"
+        files { "examples/ex3.d" }
+        links { "http4d", "cJSON", "zmq" }
+
+    project "ex4"
+        kind "ConsoleApp"
+        language "D"
+        files { "examples/ex4.d" }
         links { "http4d", "cJSON", "zmq" }
 

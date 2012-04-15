@@ -5,7 +5,6 @@ import std.ascii;
 public import protocol.http;
 import std.stdio, std.string, std.conv, std.stdint, std.array, std.range,
        std.datetime, std.algorithm, std.concurrency, std.typecons, std.random, std.utf;
-import util.logger, util.util;
 import cjson.cJSON;
 import zmq;
 
@@ -263,7 +262,9 @@ ZMQMsg toMongrelResponse( shared(Response) resp )
     buf.put( ' ' );
 
     //now add the HTTP payload
-    buf.put( toHttpResponse( resp ) );
+    auto x = toHttpResponse( resp );
+    buf.put( x[ 0 ] );
+    //TODO: ignoring x[ 1 ] (ie. needsClose, for now)
 
     ZMQMsg msg = new ZMQMsg( cast(char[])buf.data );
     debug dumpHex( cast(char[]) buf.data );
