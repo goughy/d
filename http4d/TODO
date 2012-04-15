@@ -1,0 +1,6 @@
+
+1. Provide completed AJP implementation (although there is no great need for it I think)
+2. Build a template based predicate dispatcher rather than class based
+3. Replace cJSON with std.json once it works!
+4. Expose some tunables (timeouts, buffer lengths, max connections etc)
+
