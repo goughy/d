@@ -91,6 +91,12 @@ libhttp4d
 
     $ dmd -g -w  -lib -debug -Dddoc  -Isrc -Isrc/cjson -Isrc/deimos    -oflibhttp4d.a test.d src/protocol/ajp.d src/protocol/http.d src/protocol/mongrel2.d src/protocol/httpapi.d
 
+then linking with your own application involves the following:
+
+    $ dmd -g -w  -debug  -Ipath/to/http4d/src -Ipath/to/http4d/src/deimos  -L-Lpath/to/http4d -L-lhttp4d -L-lcJSON -L-lzmq -oftest main.d
+
+Enjoy!
+
 
 License: [Boost License 1.0](http://boost.org/LICENSE_1_0.txt) 
 
