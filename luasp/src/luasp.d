@@ -1,10 +1,71 @@
 
 module luasp;
 public import luad.all;
-import std.file, std.datetime, std.stream, std.stdio : writefln;
+import std.file, std.datetime, std.stream, std.stdio;
 
 enum LSP_WRITER    = "__luasp_writer";
 enum LSP_USE_CACHE = "__luasp_usecache";
+
+alias void function( in string s ) LspWriter;
+
+// ------------------------------------------------------------------------- //
+
+void stdoutWriter( in string s )
+{
+    write( s );
+}
+
+// ------------------------------------------------------------------------- //
+
+class LspState
+{
+    this( LuaState state )
+    {
+        L = state;
+
+        L[ "dotmpl" ]         = &lsp_include;
+        L[ "dofile_lsp" ]     = &lsp_include;
+        L[ "echo" ]           = &lsp_echo;
+        L[ "write" ]          = &lsp_echo;
+        L[ "print" ]          = &lsp_print;
+        L[ "log" ]            = &lsp_log;
+
+        L[ "url_decode" ]     = &lsp_url_decode;
+        L[ "args_decode" ]    = &lsp_args_decode;
+        L[ "content_type" ]   = &lsp_content_type;
+        L[ "set_out_header" ] = &lsp_set_out_header;
+        L[ "get_in_header" ]  = &lsp_get_in_header;
+        L[ "uuid_gen" ]       = &lsp_uuid_gen;
+    }
+
+    void doLsp( string filename, LuaTable args, LspWriter = &stdoutWriter )
+    {
+        L.registry[ LSP_WRITER ]    = &stdoutWriter;
+        L.registry[ LSP_USE_CACHE ] = cache_;
+        L[ "args" ]                 = args;
+
+        processLsp( L, filename );
+    }
+
+    @property LuaState state() { return L; }
+
+    @property LuaTable env()
+    {
+        if( env_.isNil )
+            env_ = L.newTable();
+
+        return env_;
+    }
+
+    @property bool cache()          { return cache_; }
+    @property void cache( bool c )  { cache_ = c;    }
+
+private:
+
+    LuaState  L;
+    LuaTable  env_;
+    bool      cache_;
+}
 
 // ------------------------------------------------------------------------- //
 
@@ -37,6 +98,7 @@ private:
 //}
 
 // ------------------------------------------------------------------------- //
+
 private immutable char chtype[ 256 ] =
 [
 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x61, 0x62, 0x74, 0x6e, 0x76, 0x66, 0x72, 0xff, 0xff,
@@ -271,18 +333,18 @@ LuaFunction loadLSPFile( LuaState L, const char[] filename )
 
     outBuf.put( '\n' );
 
-    debug writefln( "=== PARSED ===\n%s ", outBuf.data );
+//    debug writefln( "=== PARSED ===\n%s ", outBuf.data );
     return L.loadString( outBuf.data );
 }
 
 // ------------------------------------------------------------------------- //
 
-LuaObject[] doLSP( LuaState L, const char[] filename )
+LuaObject[] processLsp( LuaState L, const char[] filename )
 {
     if( !L.registry.get!bool( LSP_USE_CACHE ) )
     {
         auto f = loadLSPFile( L, filename );
-        debug writefln( "Loaded LSP from %s: func = %s", filename, f.toString() );
+//        debug writefln( "Loaded LSP from %s: func = %s", filename, f.toString() );
         return f(); //execute it!
     }
 
@@ -303,9 +365,10 @@ LuaObject[] doLSP( LuaState L, const char[] filename )
     
     //we need to parse the file, dump the compiled code, and then execute it
     auto f = loadLSPFile( L, filename );
-    if( f == f.init )
+    if( !f.isNil )
     {
-        File cf = new File( cacheFile, FileMode.Out );
+//        debug writefln( "Writing cache file: %s", cacheFile );
+        std.stream.File cf = new std.stream.File( cacheFile, std.stream.FileMode.Out );
         scope(exit) cf.close();
         f.dump( (data) => cf.writeBlock( data.ptr, data.length ) == data.length );
     }
@@ -315,69 +378,89 @@ LuaObject[] doLSP( LuaState L, const char[] filename )
 
 // ------------------------------------------------------------------------- //
 
-int lua_echo( LuaState L, LuaObject[] args )
+void lsp_echo( LuaObject[] params... )
 {
-    return 0;
-}
+    auto w = L.registry.get!LuaObject( LSP_WRITER ); 
 
-// ------------------------------------------------------------------------- //
-
-int lua_include( LuaState L, LuaObject[] args )
-{
-    return 0;
-}
-
-// ------------------------------------------------------------------------- //
-
-int lua_print( LuaState L, LuaObject[] args )
-{
-    auto writer = L.registry.get!LuaObject( LSP_WRITER ); 
-
-//    lua_getfield(L,LUA_REGISTRYINDEX,lsp_io_type);
-//    lsp_io* io=(lsp_io*)lua_touserdata(L,-1);
-    
-
-    for( int i = 0; i < args.length; i++ )
+    if( params.length > 0 )
     {
-	    string s = args[ i ].toString();
-//	    if( s is null )
-//	        return luaL_error(L, LUA_QL("tostring") " must return a string to " LUA_QL("print"));
-//
-//
-//        size_t ll = 0;
-//        
-//        while( ll < len )
-//        {
-//            size_t n=io->lwrite(io->lctx,s+ll,len-ll);
-//            if(!n)
-//            break;
-//            ll+=n;
-//        }
-//
-//        if(i<n)
-//            io->lputc(io->lctx,'\t');
-//
-//        lua_pop(L,1);
+        foreach( param; params[ 0 .. $ - 1 ] )
+        {
+            w( param );
+            w( " " );
+        }
+        write( params[ $ - 1 ] );
     }
-
-//    io->lputc(io->lctx,'\n');
-
-    return 0;
 }
 
 // ------------------------------------------------------------------------- //
 
-void openLSP( LuaState L )
+void lsp_include( LuaObject[] args... )
 {
-    L[ "dotmpl" ]     = &lua_include;
-    L[ "dofile_lsp" ] = &lua_include;
-    L[ "echo" ]       = &lua_echo;
-    L[ "write" ]      = &lua_echo;
-    L[ "print" ]      = &lua_print;
-   
-    L.registry[ LSP_USE_CACHE ] = false;
-
-    debug writefln( "Registered LSP handlers" );
-//TODO    luaopen_lualspaux(L);
 }
 
+// ------------------------------------------------------------------------- //
+
+void lsp_print( LuaObject[] params... )
+{
+    auto w = L.registry.get!LuaObject( LSP_WRITER ); 
+
+    if( params.length > 0 )
+    {
+        foreach( param; params[ 0 .. $ - 1 ] )
+        {
+            w( param );
+            w( "\t" );
+        }
+        w( params[ $ - 1 ] );
+    }
+    w( "\n" );
+}
+
+// ------------------------------------------------------------------------- //
+
+void lsp_url_decode( LuaObject url )
+{
+}
+
+// ------------------------------------------------------------------------- //
+
+void lsp_args_decode( LuaObject url )
+{
+}
+
+// ------------------------------------------------------------------------- //
+
+void lsp_log( const(char)[] msg )
+{
+}
+
+// ------------------------------------------------------------------------- //
+
+void lsp_content_type( const(char)[] type )
+{
+}
+
+// ------------------------------------------------------------------------- //
+
+void lsp_set_out_header( const(char)[] key, const(char)[] value )
+{
+}
+
+// ------------------------------------------------------------------------- //
+
+void lsp_get_in_header( const(char)[] key )
+{
+}
+
+// ------------------------------------------------------------------------- //
+
+void lsp_uuid_gen()
+{
+}
+
+// ------------------------------------------------------------------------- //
+
+void setLSPUseCache( LuaState L, bool flag )
+{
+}

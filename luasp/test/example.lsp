@@ -34,17 +34,17 @@ URI: <?=env.uri?><br><br>
 <br>
 
 <?
-    curl.timeout(5)
+--    curl.timeout(5)
 
-    req=curl.open('GET','http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt')
+--    req=curl.open('GET','http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt')
 
-    content=req:send()
+--    content=req:send()
 
-    if req:status()==200 then
-	echo('<pre>')
-	print(content)
-	echo('</pre>')
-    end
+--    if req:status()==200 then
+--	echo('<pre>')
+--	print(content)
+--	echo('</pre>')
+--    end
     
     content=nil			-- optional, this free the memory
 ?>
