@@ -8,7 +8,7 @@ solution "lsp"
 
     configuration "debug"
         flags { "Symbols", "ExtraWarnings" }
-        buildoptions "-gc"
+        buildoptions { "-gc", "-unittest" }
 
     configuration "release"
         flags { "Optimize" }

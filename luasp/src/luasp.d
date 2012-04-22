@@ -1,12 +1,16 @@
 
 module luasp;
 public import luad.all;
-import std.file, std.datetime, std.stream, std.stdio;
+import luad.stack, luad.c.all;
+import std.file, std.datetime, std.stream, std.stdio, std.conv;
 
 enum LSP_WRITER    = "__luasp_writer";
 enum LSP_USE_CACHE = "__luasp_usecache";
+enum LSP_DSTATE    = "__luasp_state";
 
 alias void function( in string s ) LspWriter;
+
+LuaTable funcEnv;
 
 // ------------------------------------------------------------------------- //
 
@@ -22,29 +26,43 @@ class LspState
     this( LuaState state )
     {
         L = state;
-
-        L[ "dotmpl" ]         = &lsp_include;
-        L[ "dofile_lsp" ]     = &lsp_include;
-        L[ "echo" ]           = &lsp_echo;
-        L[ "write" ]          = &lsp_echo;
-        L[ "print" ]          = &lsp_print;
-        L[ "log" ]            = &lsp_log;
-
-        L[ "url_decode" ]     = &lsp_url_decode;
-        L[ "args_decode" ]    = &lsp_args_decode;
-        L[ "content_type" ]   = &lsp_content_type;
-        L[ "set_out_header" ] = &lsp_set_out_header;
-        L[ "get_in_header" ]  = &lsp_get_in_header;
-        L[ "uuid_gen" ]       = &lsp_uuid_gen;
     }
 
-    void doLsp( string filename, LuaTable args, LspWriter = &stdoutWriter )
+    void doLsp( string filename, LuaTable args, LspWriter writer = &stdoutWriter )
     {
-        L.registry[ LSP_WRITER ]    = &stdoutWriter;
-        L.registry[ LSP_USE_CACHE ] = cache_;
-        L[ "args" ]                 = args;
+        if( funcEnv.isNil ) 
+        {
+            //first time in this thread processing, so configure the per-thread
+            //function environment
+            funcEnv = L.newTable();
 
-        processLsp( L, filename );
+            //populate the new environment with the full global env alos: see http://www.lua.org/pil/14.3.html
+            auto meta = L.newTable();
+            meta[ "__index" ] = L.globals;
+            funcEnv.setMetaTable( meta );
+
+            funcEnv[ "dotmpl" ]         = &lsp_include;
+            funcEnv[ "dofile_lsp" ]     = &lsp_include;
+            funcEnv[ "echo" ]           = &lsp_echo;
+            funcEnv[ "write" ]          = &lsp_echo;
+            funcEnv[ "print" ]          = &lsp_print;
+            funcEnv[ "log" ]            = &lsp_log;
+
+            funcEnv[ "url_decode" ]     = &lsp_url_decode;
+            funcEnv[ "args_decode" ]    = &lsp_args_decode;
+            funcEnv[ "content_type" ]   = &lsp_content_type;
+            funcEnv[ "set_out_header" ] = &lsp_set_out_header;
+            funcEnv[ "get_in_header" ]  = &lsp_get_in_header;
+            funcEnv[ "uuid_gen" ]       = &lsp_uuid_gen;
+        }
+
+        funcEnv[ LSP_WRITER ]    = writer;
+        funcEnv[ LSP_USE_CACHE ] = cache_;
+
+        funcEnv[ "args" ]        = args;
+        funcEnv[ "env" ]         = env();
+
+        lsp_include( filename );
     }
 
     @property LuaState state() { return L; }
@@ -65,6 +83,139 @@ private:
     LuaState  L;
     LuaTable  env_;
     bool      cache_;
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_include( in const(char[]) filename )
+    {
+        auto f = loadLsp( filename );
+        f.setEnvironment( funcEnv );
+        f();
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_echo( LuaObject[] params... )
+    {
+        auto w = funcEnv[ LSP_WRITER ].to!LuaFunction;
+        if( params.length > 0 )
+        {
+            foreach( param; params[ 0 .. $-1 ] )
+            {
+                w( param.toString );
+                w( " " );
+            }
+            w( params[ $-1 ].toString );
+        }
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_print( LuaObject[] params... )
+    {
+        auto w = funcEnv[ LSP_WRITER ].to!LuaFunction;
+
+        if( params.length > 0 )
+        {
+            foreach( param; params[ 0 .. $ - 1 ] )
+            {
+                w( param );
+                w( "\t" );
+            }
+            w( params[ $ - 1 ] );
+        }
+        w( "\n" );
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    const(char[]) lsp_url_decode( immutable(char[]) url )
+    {
+        return decodeUrl( url );
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_args_decode( const(char[]) args )
+    {
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_log( const(char[]) msg )
+    {
+        writeln( "LOG: ", msg );
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_content_type( const(char[]) type )
+    {
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_set_out_header( const(char[]) key, const(char[]) value )
+    {
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_get_in_header( const(char[]) key )
+    {
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    void lsp_uuid_gen()
+    {
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    LuaFunction loadLsp( const(char[]) filename )
+    {
+        LuaFunction func;
+
+        if( !cache_ )
+            func = parseLsp( filename );
+        else
+        {
+            string cacheFile = std.path.setExtension( std.path.stripExtension( filename ), "luac" );
+
+            if( exists( cacheFile ) )
+            {
+                SysTime atime1, mtime1, atime2, mtime2;
+                getTimes( filename, atime1, mtime1 );
+                getTimes( cacheFile, atime2, mtime2 );
+
+                if( mtime1 < mtime2 ) //cache file is still relevant
+                    func = L.loadFile( cacheFile );
+            }
+
+            if( func.isNil )
+            {
+                //we need to parse the file, dump the compiled code, and then execute it
+                func = parseLsp( filename );
+                if( !func.isNil )
+                {
+                    std.stream.File cf = new std.stream.File( cacheFile, std.stream.FileMode.Out );
+                    scope(exit) cf.close();
+                    func.dump( (data) => cf.writeBlock( data.ptr, data.length ) == data.length );
+                }
+            }
+        }
+
+        return func;
+    }
+
+    // ------------------------------------------------------------------------- //
+
+    LuaFunction parseLsp( const char[] filename )
+    {
+        return L.loadString( parseLspFile( filename ) );
+    }
+
 }
 
 // ------------------------------------------------------------------------- //
@@ -90,37 +241,28 @@ private:
 
 // ------------------------------------------------------------------------- //
 
-//class LSPException : Exception
-//{
-//    this() {}
-//    this( const char[] msg )    { super( msg ); }
-//    this( string msg )          { super( msg ); }
-//}
-
-// ------------------------------------------------------------------------- //
-
-private immutable char chtype[ 256 ] =
-[
-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x61, 0x62, 0x74, 0x6e, 0x76, 0x66, 0x72, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-	0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5c, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-];
-
-LuaFunction loadLSPFile( LuaState L, const char[] filename )
+const(char[]) parseLspFile( const(char[]) filename )
 {
+    immutable char chtype[ 256 ] =
+    [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x61, 0x62, 0x74, 0x6e, 0x76, 0x66, 0x72, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5c, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    ];
+
     enum Status 
     {
         echo1,
@@ -159,7 +301,7 @@ LuaFunction loadLSPFile( LuaState L, const char[] filename )
         }
     }
 
-    auto buf = cast(const(char)[]) std.file.read( filename );
+    auto buf = cast(const(char[])) std.file.read( filename );
 
     uint currLine;
     outBuf.reserve( cast(ulong) (buf.length * 1.5) );
@@ -333,134 +475,128 @@ LuaFunction loadLSPFile( LuaState L, const char[] filename )
 
     outBuf.put( '\n' );
 
-//    debug writefln( "=== PARSED ===\n%s ", outBuf.data );
-    return L.loadString( outBuf.data );
+//    debug writefln( "=== PARSED ===\n%s\n======", outBuf.data );
+    return outBuf.data;
 }
 
 // ------------------------------------------------------------------------- //
 
-LuaObject[] processLsp( LuaState L, const char[] filename )
+const(char[]) decodeUrl( immutable(char[]) url )
 {
-    if( !L.registry.get!bool( LSP_USE_CACHE ) )
+    static immutable char hex[256] =
+    [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+    ];
+
+    auto buf = std.array.appender!(char[])();
+
+    for( int i = 0; i < url.length; i++ )
     {
-        auto f = loadLSPFile( L, filename );
-//        debug writefln( "Loaded LSP from %s: func = %s", filename, f.toString() );
-        return f(); //execute it!
-    }
-
-    string cacheFile = std.path.setExtension( std.path.stripExtension( filename ), "luac" );
-
-    if( exists( cacheFile ) )
-    {
-        SysTime atime1, mtime1, atime2, mtime2;
-        getTimes( filename, atime1, mtime1 );
-        getTimes( cacheFile, atime2, mtime2 );
-
-        if( mtime1 < mtime2 ) //cache file is still relevant
+        immutable char c = url[ i ];
+        switch( c )
         {
-            //just execute the pre-compiled cached Lua code...
-            return L.doFile( cacheFile );
-        }
+            case '+': 
+                buf.put( ' ' ); 
+                break;
+
+            case '%':
+                if( url.length >= i + 2 )
+                {
+                    immutable c1 = hex[ url[ ++i ] ];
+                    immutable c2 = hex[ url[ ++i ] ];
+
+                    if( c1 != 0xff && c2 != 0xff )
+                        buf.put( cast(char) (((c1 << 4) & 0xf0) | (c2 & 0x0f)) );
+                    else
+                        buf.put( '.' );
+                }
+                break;
+
+            default: 
+                buf.put( c );
+                break;
+        }	
     }
     
-    //we need to parse the file, dump the compiled code, and then execute it
-    auto f = loadLSPFile( L, filename );
-    if( !f.isNil )
-    {
-//        debug writefln( "Writing cache file: %s", cacheFile );
-        std.stream.File cf = new std.stream.File( cacheFile, std.stream.FileMode.Out );
-        scope(exit) cf.close();
-        f.dump( (data) => cf.writeBlock( data.ptr, data.length ) == data.length );
-    }
-
-    return f();
+    return buf.data;
 }
 
 // ------------------------------------------------------------------------- //
 
-void lsp_echo( LuaObject[] params... )
+const(char[]) decodeArg( const(char[]) arg )
 {
-    auto w = L.registry.get!LuaObject( LSP_WRITER ); 
+//    size_t offset1=0,length1=0;
+//    size_t offset2=0,length2=0;
+//
+//    size_t i;
+//
+//    for(i=0;i<len;++i)
+//    {    
+//        if(p[i]=='=')
+//        {
+//            length1=i-offset1;
+//            offset2=i+1;
+//        }else if(p[i]=='&')
+//        {
+//            length2=i-offset2;
+//
+//            if(length1 && length2)
+//            {	    
+//                lua_pushlstring(L,p+offset1,length1);
+//                urldecode(L,p+offset2,length2);
+//                lua_rawset(L,-3);
+//            }
+//
+//            offset1=i+1;
+//            length1=offset2=length2=0;
+//        }
+//    }
+//
+//    length2=i-offset2;
+//
+//    if(length1 && length2)
+//    {	    
+//        lua_pushlstring(L,p+offset1,length1);
+//        urldecode(L,p+offset2,length2);
+//        lua_rawset(L,-3);
+//    }
 
-    if( params.length > 0 )
-    {
-        foreach( param; params[ 0 .. $ - 1 ] )
-        {
-            w( param );
-            w( " " );
-        }
-        write( params[ $ - 1 ] );
-    }
+    return "";
 }
 
-// ------------------------------------------------------------------------- //
-
-void lsp_include( LuaObject[] args... )
+debug void onPanic( LuaState L, in char[] msg )
 {
+    writefln( "PANIC: %s", msg );
 }
 
-// ------------------------------------------------------------------------- //
-
-void lsp_print( LuaObject[] params... )
+unittest 
 {
-    auto w = L.registry.get!LuaObject( LSP_WRITER ); 
+    writeln( "Unit test executing" );
 
-    if( params.length > 0 )
-    {
-        foreach( param; params[ 0 .. $ - 1 ] )
-        {
-            w( param );
-            w( "\t" );
-        }
-        w( params[ $ - 1 ] );
-    }
-    w( "\n" );
-}
+    LuaState L = new LuaState;
+    L.openLibs();
+    L.setPanicHandler( &onPanic );
 
-// ------------------------------------------------------------------------- //
+    LspState lsp = new LspState( L );
 
-void lsp_url_decode( LuaObject url )
-{
-}
-
-// ------------------------------------------------------------------------- //
-
-void lsp_args_decode( LuaObject url )
-{
-}
-
-// ------------------------------------------------------------------------- //
-
-void lsp_log( const(char)[] msg )
-{
-}
-
-// ------------------------------------------------------------------------- //
-
-void lsp_content_type( const(char)[] type )
-{
-}
-
-// ------------------------------------------------------------------------- //
-
-void lsp_set_out_header( const(char)[] key, const(char)[] value )
-{
-}
-
-// ------------------------------------------------------------------------- //
-
-void lsp_get_in_header( const(char)[] key )
-{
-}
-
-// ------------------------------------------------------------------------- //
-
-void lsp_uuid_gen()
-{
-}
-
-// ------------------------------------------------------------------------- //
-
-void setLSPUseCache( LuaState L, bool flag )
-{
+    //test URL decode
+    assert( lsp.lsp_url_decode( "abc+def" ) == "abc def" );
+    assert( lsp.lsp_url_decode( "abc%2C+def" ) == "abc, def" );
+    assert( lsp.lsp_url_decode( "http://www.permadi.com/tutorial/urlEncoding/example.html?var=This+is+a+simple+%26+short+test." ) == "http://www.permadi.com/tutorial/urlEncoding/example.html?var=This is a simple & short test." );
+    writeln( "Unit test finished" );
 }
