@@ -26,8 +26,8 @@ URI: <?=env.uri?><br><br>
 
 <?
     print('Arguments from request line:<br>')
-    for i,j in pairs(args) do
-	print(i..'='..j..'<br>')
+    for i,j in pairs(args_decode(env.args)) do
+	    print(i..'='..j..'<br>')
     end
 ?>
 

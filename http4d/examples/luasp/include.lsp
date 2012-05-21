@@ -1,5 +1,7 @@
 <?# This is comment ?>
 
+<? dofile_lsp( "test/example.lsp" ) ?>
+
 <html>
 <head><title>Hello from luasp</title></head>
 
