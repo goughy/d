@@ -107,6 +107,7 @@ string[] RespHeaders = [ "",
 char[] getString( ubyte[] buf, ref int pos )
 {
     int slen = getInt( buf, pos );
+
     if( slen == -1 || slen == 0xFFFF )
         return [];
 
@@ -114,7 +115,7 @@ char[] getString( ubyte[] buf, ref int pos )
     int cpos = pos;
     pos += slen + 1;         // +1 skips \0 at end of string
 
-    return cast(char[]) buf[ cpos .. pos - 1 ];
+    return cast( char[] ) buf[ cpos .. pos - 1 ];
 }
 
 int getInt( ubyte[] buf, ref int pos )
@@ -133,7 +134,7 @@ void putInt( ref Appender!( ubyte[] ) builder, int x )
     builder.put( cast( ubyte )( x & 0xFF ) );
 }
 
-void putString( ref Appender!( ubyte[] ) builder, immutable(char)[] s )
+void putString( ref Appender!( ubyte[] ) builder, immutable( char )[] s )
 {
     putInt( builder, cast( int ) s.length );
     builder.put( cast( ubyte[] ) s );
@@ -152,7 +153,7 @@ void putPrelude( ref Appender!( ubyte[] ) builder, PacketType t, int len = 0 )
     putByte( builder, 'A' );
     putByte( builder, 'B' );
     putInt( builder, len + 1 ); //placeholder for length
-    putByte( builder, cast(ubyte) t );
+    putByte( builder, cast( ubyte ) t );
 }
 
 void putLength( ref Appender!( ubyte[] ) builder, int len )
@@ -168,16 +169,19 @@ ubyte[] readAjpMsg( Socket client )
 {
     ubyte packLen[ 4 ];
     int  num = cast( int ) client.receive( packLen );
+
     if( num != 4 || packLen[ 0 ] != 0x12 || packLen[ 1 ] != 0x34 )
     {
-        debug dumpHex( cast(char[]) packLen, "Header" );
+        debug dumpHex( cast( char[] ) packLen, "Header" );
         throw new Exception( "AJP protocol error: received invalid packet header" );
     }
+
     int dataLen = ( cast( int ) packLen[ 2 ] << 8 ) + packLen[ 3 ];
 
     ubyte[] reqData;
     reqData.length = dataLen;
     reqData.length = cast( int ) client.receive( reqData );
+
     if( reqData.length == 0 )
         throw new Exception( "AJP protocol error: received 0 bytes from upstream" );
 
@@ -186,21 +190,21 @@ ubyte[] readAjpMsg( Socket client )
 
 // ------------------------------------------------------------------------- //
 
-ubyte[] convertResponse( shared(Response) r )
+ubyte[] convertResponse( shared( Response ) r )
 {
     //for a response, we need to send an AJP13_SEND_HEADERS
     //followed by an AJP13_SEND_BODY_CHUNK
 
-    auto buf = appender!(ubyte[])();
+    auto buf = appender!( ubyte[] )();
     buf.reserve( 512 );
 
     putPrelude( buf, PacketType.SEND_HEADERS );
     putInt( buf, r.statusCode );
     putString( buf, r.statusMesg );
 
-    putInt( buf, cast(int) r.headers.length );
+    putInt( buf, cast( int ) r.headers.length );
 
-    foreach( k,v; r.headers )
+    foreach( k, v; r.headers )
     {
         switch( k.toLower )
         {
@@ -208,56 +212,68 @@ ubyte[] convertResponse( shared(Response) r )
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x01 );
                 break;
+
             case "content-language":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x02 );
                 break;
+
             case "content-length":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x03 );
                 break;
+
             case "date":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x04 );
                 break;
+
             case "last-modified":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x05 );
                 break;
+
             case "location":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x06 );
                 break;
+
             case "set-cookie":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x07 );
                 break;
+
             case "set-cookie2":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x08 );
                 break;
+
             case "servlet-engine":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x09 );
                 break;
+
             case "status":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x0A );
                 break;
+
             case "www-authenticate":
                 putByte( buf, 0xA0 );
                 putByte( buf, 0x0B );
                 break;
+
             default:
                 putString( buf, k );
                 break;
         }
+
         putString( buf, v );
     }
 
     //ensure we had a "Content-Length" header
     //if not, make one
-    if( !("content-length" in r.headers ) )
+    if( !( "content-length" in r.headers ) )
     {
         putByte( buf, 0xA0 );
         putByte( buf, 0x03 );
@@ -266,19 +282,21 @@ ubyte[] convertResponse( shared(Response) r )
 
     //now go back and set the length
     debug writefln( "Header packet length is %d", buf.data.length - 4 );
-    putLength( buf, cast(int) buf.data.length - 5 );
-    debug dumpHex( cast(char[]) buf.data, "HEADER PACKET" );
+    putLength( buf, cast( int ) buf.data.length - 5 );
+    debug dumpHex( cast( char[] ) buf.data, "HEADER PACKET" );
+
     if( r.data.length > 0 )
     {
-        putPrelude( buf, PacketType.SEND_CHUNK, cast(int) r.data.length + 3 ); //add the packet type
-        putData( buf, cast(ubyte[]) r.data );
+        putPrelude( buf, PacketType.SEND_CHUNK, cast( int ) r.data.length + 3 ); //add the packet type
+        putData( buf, cast( ubyte[] ) r.data );
     }
-    debug dumpHex( cast(char[]) buf.data[ buf.data.length - r.data.length  - 5 .. $ ], "SEND_CHUNK PACKET" );
+
+    debug dumpHex( cast( char[] ) buf.data[ buf.data.length - r.data.length  - 5 .. $ ], "SEND_CHUNK PACKET" );
 
     //add END_RESPONSE packet
     buf.put( END );
 
-    debug dumpHex( cast(char[]) buf.data, "AJP RESPONSE" );
+    debug dumpHex( cast( char[] ) buf.data, "AJP RESPONSE" );
     return buf.data;
 }
 
@@ -295,7 +313,7 @@ static this()
     putPrelude( buf, PacketType.C_PONG, 5 );
     putInt( buf, 1 );
     putInt( buf, 0 );                //zero length string
-    buf.put( cast(ubyte) '\0' );                 //null terminator
+    buf.put( cast( ubyte ) '\0' );               //null terminator
     PONG = buf.data;
 
     buf = appender!( ubyte[] )();
@@ -306,16 +324,17 @@ static this()
 
 // ------------------------------------------------------------------------- //
 
-Tuple!(shared(Request),int) parseAjpForward( ubyte[] buf )
+Tuple!( shared( Request ), int ) parseAjpForward( ubyte[] buf )
 {
     debug writefln( "AJP forward message size = %d", buf.length );
+
     if( buf is null )
         throw new Exception( "AJP Message parse failure: buffer is NULL" );
 
     int pos  = 1;        //skip the 'type' byte - its already set
-    shared Request req = new shared(Request)();
+    shared Request req = new shared( Request )();
 
-//		type       = cast(PacketType) _buf[ pos++ ];
+//      type       = cast(PacketType) _buf[ pos++ ];
     req.method     = toMethod( buf[ pos++ ] );
     req.protocol   = getString( buf, pos ).idup;
     req.uri        = getString( buf, pos ).idup;
@@ -334,6 +353,7 @@ Tuple!(shared(Request),int) parseAjpForward( ubyte[] buf )
 //    debug dump( req, "PRE HEADERS" );
 
     int reqLen = 0;
+
     //parse the headers
     for( int i = getInt( buf, pos ); i > 0; i-- )
     {
@@ -347,9 +367,11 @@ Tuple!(shared(Request),int) parseAjpForward( ubyte[] buf )
             debug writefln( "(D) header %d: %s = %s", i, key, val );
 
             req.headers[ key ] = val;
+
             if( idx == 0x08 )                 //ie. "Content-Length" header
             {
                 reqLen = to!int( val );
+
                 if( reqLen > MAX_REQLEN )
                     throw new Exception( "Maximum request size exceeded (" ~ val ~ " > " ~ to!string( MAX_REQLEN ) );
             }
@@ -405,7 +427,8 @@ public:
 
     void close()
     {
-        debug writefln( "Closing connection %s (%s)", id, to!string( cast(int) _socket.handle() ) );
+        debug writefln( "Closing connection %s (%s)", id, to!string( cast( int ) _socket.handle() ) );
+
         try
         {
             if( _socket.isAlive )
@@ -413,13 +436,13 @@ public:
 
             _socket.close();
         }
-        catch( Throwable t ) 
+        catch( Throwable t )
         {
             writefln( "(E) socket close failed on connection %s: %s", _id, t.toString() );
         }
     }
 
-    shared(Request) read()
+    shared( Request ) read()
     {
 //        if( _state & Flags.CLOSING )
 //            throw new Exception( "Attempted to read from CLOSED connection " ~ _id );
@@ -447,7 +470,7 @@ public:
 //                _state |= Flags.WRITING;
 //            }
 //        }
-//        else 
+//        else
 //        {
 //            _lastReq.data = cast(shared ubyte[]) buf; //append POST data (if any)
 //            _state &= ~Flags.READING;
@@ -487,7 +510,7 @@ public:
         return 0UL;
     }
 
-    void add( shared(Response) r )
+    void add( shared( Response ) r )
     {
         debug dump( r );
         _lastResp ~= convertResponse( r );
@@ -535,11 +558,12 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
         allConns[ conn.id ] = conn;
     }
 
-    void doRead( AjpConnection c ) 
+    void doRead( AjpConnection c )
     {
         try
         {
             shared Request req = c.read();
+
             if( req !is null )
                 proc.onRequest( req );
         }
@@ -550,13 +574,13 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
         }
     }
 
-    void doWrite( AjpConnection c ) 
+    void doWrite( AjpConnection c )
     {
         debug writefln( "Write set on connection %s", c.id );
         c.write();
     }
 
-    void doExcept( AjpConnection c ) 
+    void doExcept( AjpConnection c )
     {
         debug writefln( "Error on connection %s", c.id );
         c.close();
@@ -564,6 +588,7 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
 
     //set up our listening socket...
     Socket listenSock;
+
     try
     {
         listenSock = new Socket( AddressFamily.INET, SocketType.STREAM );
@@ -667,7 +692,7 @@ void ajpServe( string address, ushort port, Tid tid )
 
 // ------------------------------------------------------------------------- //
 
-void ajpServe( string address, ushort port, shared(Response) delegate(shared(Request)) dg )
+void ajpServe( string address, ushort port, shared( Response ) delegate( shared( Request ) ) dg )
 {
     ajpServeImpl( address, port, new DelegateProcessor( dg, "[AJP-D] " ) );
 }
@@ -725,6 +750,7 @@ Method toMethod( ubyte m )
         default:
             break;
     }
+
     return Method.UNKNOWN;
 }
 

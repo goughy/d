@@ -4,9 +4,9 @@ HTTP4D provides an easy entry point for providing embedded HTTP support
 into any D application.  The library provides endpoints for the following
 
 Supported Protocols:
-$(OL 
+$(OL
     $(LI HTTP internal implementation)
-    $(LI AJP internal implementation (incomplete)) 
+    $(LI AJP internal implementation (incomplete))
     $(LI Mongrel2 - Relies on the ZMQ library))
 It provides a very simple interface using request/response style making it very
 easy to dispatch, route and handle a variety of web requests.
@@ -27,21 +27,21 @@ int main( string[] args )
 }
 ---
 In general no attempt is made to ensure compliance to the HTTP protocol as part of the response
-as that is deemed the responsibility of the developer using the library.  That is, this library 
-does not aim to be an HTTP/1.1 RFC 2616 compliant server, but rather an embeddable library 
-that can expose an endpoint that may be interacted with via an HTTP client 
+as that is deemed the responsibility of the developer using the library.  That is, this library
+does not aim to be an HTTP/1.1 RFC 2616 compliant server, but rather an embeddable library
+that can expose an endpoint that may be interacted with via an HTTP client
 (such as a browser or programmatically eg. cURL).
 
-This provides maximum flexibility to the developer, rather than implementing full server 
+This provides maximum flexibility to the developer, rather than implementing full server
 constraints.  It is expected that an application would $(B $(I not)) expose itself to the
 internet, but access would be moderated via a process with better security credentials, such
-as $(LINK2 http://httpd.apache.org/, Apache), $(LINK2 http://www.nginx.org/, Nginx), 
+as $(LINK2 http://httpd.apache.org/, Apache), $(LINK2 http://www.nginx.org/, Nginx),
 or $(LINK2 http://mongrel2.org/, Mongrel2).  The exception to this rule is with
 respect to the "Connection" header, as that is used to determine the "keep-alive"
 nature of the underlying socket connection - ie. set the "Connection" header to
 "close" and the library will close the socket after transmitting the response.
 
-However, by exposing an HTTP interface directly, those systems may proxy requests through 
+However, by exposing an HTTP interface directly, those systems may proxy requests through
 to a D application using this library incredibly easily.
 
 License: $(LINK2 http://boost.org/LICENSE_1_0.txt, Boost License 1.0).
@@ -56,16 +56,16 @@ import std.stdio, std.array, std.regex, std.typecons, std.ascii, std.string;
 
 // ------------------------------------------------------------------------- //
 
-enum Method 
-{ 
-    UNKNOWN, 
-    OPTIONS, 
-    GET, 
-    HEAD, 
-    POST, 
-    PUT, 
-    DELETE, 
-    TRACE, 
+enum Method
+{
+    UNKNOWN,
+    OPTIONS,
+    GET,
+    HEAD,
+    POST,
+    PUT,
+    DELETE,
+    TRACE,
     CONNECT
 };
 
@@ -79,79 +79,79 @@ immutable string[ int ] StatusCodes;
 static this()
 {
     StatusCodes = [
-        100: "Continue",
-        101: "Switching Protocols",
-        102: "Processing",
+                  100: "Continue",
+                  101: "Switching Protocols",
+                  102: "Processing",
 
-        200: "OK",
-        201: "Created",
-        202: "Accepted",
-        203: "Non-Authoritative Information",
-        204: "No Content",
-        205: "Reset Content",
-        206: "Partial Content",
-        207: "Multi-Status (RFC 4918)",
-        208: "Already Reported (RFC 5842)",
-        226: "IM Used (RFC 3229)",
+                  200: "OK",
+                  201: "Created",
+                  202: "Accepted",
+                  203: "Non-Authoritative Information",
+                  204: "No Content",
+                  205: "Reset Content",
+                  206: "Partial Content",
+                  207: "Multi-Status (RFC 4918)",
+                  208: "Already Reported (RFC 5842)",
+                  226: "IM Used (RFC 3229)",
 
-        300: "Mulitple Choices",
-        301: "Moved Permanently",
-        302: "Found",
-        303: "See Other",
-        304: "Not Modified",
-        305: "Use Proxy",
-        306: "Switch Proxy",
-        307: "Temporary Redirect",
-        308: "Permanent Redirect",
+                  300: "Mulitple Choices",
+                  301: "Moved Permanently",
+                  302: "Found",
+                  303: "See Other",
+                  304: "Not Modified",
+                  305: "Use Proxy",
+                  306: "Switch Proxy",
+                  307: "Temporary Redirect",
+                  308: "Permanent Redirect",
 
-        400: "Bad Request",
-        401: "Unauthorized",
-        402: "Payment Required",
-        403: "Forbidden",
-        404: "Not Found",
-        405: "Method Not Allowed",
-        406: "Not Acceptable",
-        407: "Proxy Authentication Required",
-        408: "Request Timeout",
-        409: "Conflict",
-        410: "Gone",
-        411: "Length Required",
-        412: "Precondition Failed",
-        413: "Request Entity Too Large",
-        414: "Request-URI Too Long",
-        415: "Unsupported Media Type",
-        416: "Requested Range Not Satisfiable",
-        417: "Expectation Failed",
-        418: "I'm a teapot (RFC 2324)", //wtf!
-        420: "Enhance Your Calm (Twitter)",
-        422: "Unprocessable Entity (RFC 4918)",
-        423: "Locked (RFC 4918)",
-        424: "Failed Dependency (RFC 4918)",
-        425: "Unordered Collection (RFC 3648)",
-        426: "Upgrade Required (RFC 2817)",
-        428: "Precondition Required",
-        429: "Too Many Requests",
-        431: "Request Header Fields Too Large",
-        444: "No Response (Nginx)",
-        449: "Retry With (Microsoft)", //M$ extension
-        450: "Blocked By Windows Parental Controls (Microsoft)",
-        499: "Client Closed Request (Nginx)",
+                  400: "Bad Request",
+                  401: "Unauthorized",
+                  402: "Payment Required",
+                  403: "Forbidden",
+                  404: "Not Found",
+                  405: "Method Not Allowed",
+                  406: "Not Acceptable",
+                  407: "Proxy Authentication Required",
+                  408: "Request Timeout",
+                  409: "Conflict",
+                  410: "Gone",
+                  411: "Length Required",
+                  412: "Precondition Failed",
+                  413: "Request Entity Too Large",
+                  414: "Request-URI Too Long",
+                  415: "Unsupported Media Type",
+                  416: "Requested Range Not Satisfiable",
+                  417: "Expectation Failed",
+                  418: "I'm a teapot (RFC 2324)", //wtf!
+                  420: "Enhance Your Calm (Twitter)",
+                  422: "Unprocessable Entity (RFC 4918)",
+                  423: "Locked (RFC 4918)",
+                  424: "Failed Dependency (RFC 4918)",
+                  425: "Unordered Collection (RFC 3648)",
+                  426: "Upgrade Required (RFC 2817)",
+                  428: "Precondition Required",
+                  429: "Too Many Requests",
+                  431: "Request Header Fields Too Large",
+                  444: "No Response (Nginx)",
+                  449: "Retry With (Microsoft)", //M$ extension
+                  450: "Blocked By Windows Parental Controls (Microsoft)",
+                  499: "Client Closed Request (Nginx)",
 
-        500: "Internal Server Error",
-        501: "Not Implemented",
-        502: "Bad Gateway",
-        503: "Service Unavailable",
-        504: "Gateway Timeout",
-        505: "HTTP Version Not Supported",
-        506: "variant Also Negotiates (RFC 2295)",
-        507: "Insufficient Storage (RFC 4918)",
-        508: "Loop Detected (RFC 5842)",
-        509: "Bandwidth Limit Exceeded (Apache)",
-        510: "Not Extended (RFC 2774)",
-        511: "Network Authenticated Required",
-        598: "Network read timeout error",
-        599: "Network connect timeout error"
-    ];
+                  500: "Internal Server Error",
+                  501: "Not Implemented",
+                  502: "Bad Gateway",
+                  503: "Service Unavailable",
+                  504: "Gateway Timeout",
+                  505: "HTTP Version Not Supported",
+                  506: "variant Also Negotiates (RFC 2295)",
+                  507: "Insufficient Storage (RFC 4918)",
+                  508: "Loop Detected (RFC 5842)",
+                  509: "Bandwidth Limit Exceeded (Apache)",
+                  510: "Not Extended (RFC 2774)",
+                  511: "Network Authenticated Required",
+                  598: "Network read timeout error",
+                  599: "Network connect timeout error"
+                  ];
 }
 
 // ------------------------------------------------------------------------- //
@@ -192,10 +192,11 @@ public:
         return attrs[ k.toLower ];
     }
 
-    shared(Response) getResponse()
-    { 
+    shared( Response ) getResponse()
+    {
         //bind the response to the reqest connection
-        shared Response resp = cast(shared) new Response( connection, protocol );
+        shared Response resp = cast( shared ) new Response( connection, protocol );
+
         if( "Connection" in headers )
             resp.addHeader( "Connection", getHeader( "Connection" ) );
 
@@ -208,10 +209,10 @@ public:
 /**
  * The $(D_PSYMBOL Response) class is delivered back to the library to be serialized and
  * transmitted to the underlying socket as defined by the $(D_PARAM connection)
- * parameter.  In general, the $(D_PARAM getResponse()) function on the 
- * $(D_PSYMBOL Request) should be used to create the $(D_PSYMBOL Response) as this ensures the 
+ * parameter.  In general, the $(D_PARAM getResponse()) function on the
+ * $(D_PSYMBOL Request) should be used to create the $(D_PSYMBOL Response) as this ensures the
  * $(D_PARAM connection) attribute is copied from the request.  However, this is
- * not strictly necessary, and a Response may be created manually so long as the 
+ * not strictly necessary, and a Response may be created manually so long as the
  * $(D_PARAM Request.connection) is copied to the $(D_PARAM Response.connection).
  *
  * Note that this class is defined as shared to support the asynchronous dispatch
@@ -221,7 +222,7 @@ public:
 shared class Response
 {
 public:
-    
+
     this( string id = "", string proto  = "" )
     {
         connection = id;
@@ -235,7 +236,7 @@ public:
     string[string]  headers;
     ubyte[]         data;
 
-    shared(Response) addHeader( string k, string v )
+    shared( Response ) addHeader( string k, string v )
     {
         headers[ capHeader( k.dup ) ] = v;
         return this;
@@ -249,10 +250,10 @@ public:
  *
  * Example:
  * ---
- * 
+ *
  * import std.stdio;
  * import protocol.http;
- * 
+ *
  * int main( string[] args )
  * {
  *     httpServe( "127.0.0.1", 8888, (req) => handleReq( req ) );
@@ -268,12 +269,15 @@ public:
  * }
  * ---
  */
-alias shared(Response) function( shared(Request) ) RequestHandler;
+alias shared( Response ) function( shared( Request ) ) RequestHandler;
+
+alias shared( Request ) HttpRequest;
+alias shared( Response ) HttpResponse;
 
 // ------------------------------------------------------------------------- //
 
 /**
- * Dispatcher base class for setting the default handler and providing 
+ * Dispatcher base class for setting the default handler and providing
  * $(D_PSYMBOL opCall()).  DO NOT USE! Use one of the subclasses instead (or
  * subclass your own)
  */
@@ -284,7 +288,7 @@ public:
 
     this()
     {
-        defHandler = (req) => req.getResponse().error( 404 );
+        defHandler = ( req ) => req.getResponse().error( 404 );
     }
 
     RequestHandler defaultHandler( RequestHandler func )
@@ -294,12 +298,12 @@ public:
         return old;
     }
 
-    shared(Response) opCall( shared(Request) r )
+    shared( Response ) opCall( shared( Request ) r )
     {
         return dispatch( r );
     }
 
-    shared(Response) dispatch( shared(Request) req )
+    shared( Response ) dispatch( shared( Request ) req )
     {
         return defHandler( req );
     }
@@ -316,10 +320,10 @@ protected:
  * HTTP Method in a $(D_PSYMBOL Request).
  *
  * Example:
- * --- 
+ * ---
  * import std.stdio;
  * import protocol.http;
- * 
+ *
  * int main( string[] args )
  * {
  *     MethodDispatch dispatcher = new MethodDispatch;
@@ -337,7 +341,7 @@ protected:
  *              header( "Content-Type", "text/html" ).
  *              content( "<html><head></head><body>Processed ok</body></html>" );
  * }
- * 
+ *
  * shared(Response) onPost( shared(Request) req )
  * {
  *     return req.getResponse().error( 405 );
@@ -357,7 +361,7 @@ public:
         handlerMap ~= ht;
     }
 
-    override shared(Response) dispatch( shared(Request) req )
+    override shared( Response ) dispatch( shared( Request ) req )
     {
         foreach( handler; handlerMap )
         {
@@ -369,20 +373,20 @@ public:
 
 private:
 
-    alias Tuple!(Method, "m", RequestHandler, "f" ) HandlerType;
+    alias Tuple!( Method, "m", RequestHandler, "f" ) HandlerType;
     HandlerType[]  handlerMap;
 }
 
 // ------------------------------------------------------------------------- //
 /**
- * A convenience class that provides a dispatch mecahnism based on the
+ * A convenience class that provides a dispatch mechanism based on the
  * URI in a $(D_PSYMBOL Request) using regular expressions.
  *
  * Example:
- * --- 
+ * ---
  * import std.stdio, std.regex;
  * import protocol.http;
- * 
+ *
  * int main( string[] args )
  * {
  *     UriDispatch dispatcher = new UriDispatch;
@@ -400,7 +404,7 @@ private:
  *              header( "Content-Type", "text/plain" ).
  *              content( "Processed an ABC request" );
  * }
- * 
+ *
  * shared(Response) onDEF( shared(Request) req )
  * {
  *      return req.getResponse().
@@ -423,7 +427,7 @@ public:
         handlerMap ~= ht;
     }
 
-    override shared(Response) dispatch( shared(Request) req )
+    override shared( Response ) dispatch( shared( Request ) req )
     {
         foreach( handler; handlerMap )
         {
@@ -435,7 +439,7 @@ public:
 
 private:
 
-    alias Tuple!(Regex!char, "r", RequestHandler, "f" ) HandlerType;
+    alias Tuple!( Regex!char, "r", RequestHandler, "f" ) HandlerType;
     HandlerType[] handlerMap;
 }
 
@@ -448,20 +452,28 @@ Method toMethod( string m )
     {
         case "get":
             return Method.GET;
+
         case "post":
             return Method.POST;
+
         case "head":
             return Method.HEAD;
+
         case "options":
             return Method.OPTIONS;
+
         case "put":
             return Method.PUT;
+
         case "delete":
             return Method.DELETE;
+
         case "trace":
             return Method.TRACE;
+
         case "connect":
             return Method.CONNECT;
+
         default:
             break;
     }
@@ -474,11 +486,11 @@ Method toMethod( string m )
 string capHeader( char[] hdr )
 {
     bool up = true; //uppercase first letter
-    foreach( i, char c; hdr ) 
+    foreach( i, char c; hdr )
     {
         if( isAlpha( c ) )
         {
-            hdr[ i ] = cast(char)(up ? toUpper( c ) : toLower( c ));
+            hdr[ i ] = cast( char )( up ? toUpper( c ) : toLower( c ) );
             up = false;
         }
         else
@@ -490,10 +502,11 @@ string capHeader( char[] hdr )
 // ------------------------------------------------------------------------- //
 
 /** Convenience function to set the HTTP response status code and message */
-shared(Response) status( shared(Response) r, int c, string m = null )
+shared( Response ) status( shared( Response ) r, int c, string m = null )
 {
     r.statusCode = c;
     r.statusMesg = m;
+
     if( m is null )
         r.statusMesg = c in StatusCodes ? StatusCodes[ c ] : "";
 
@@ -501,26 +514,26 @@ shared(Response) status( shared(Response) r, int c, string m = null )
 }
 
 /** Convenience function to set the HTTP response status code and message to '200 OK'*/
-shared(Response) ok( shared(Response) r )                           { return r.status( 200 ); }
+shared( Response ) ok( shared( Response ) r )                           { return r.status( 200 ); }
 /** Convenience function to set the HTTP response status code */
-shared(Response) error( shared(Response) r, int c )                 { return r.status( c ); }
+shared( Response ) error( shared( Response ) r, int c )                 { return r.status( c ); }
 /** Convenience function to set the HTTP response status code */
-shared(Response) notfound( shared(Response) r )                     { return r.status( 404 ); }
+shared( Response ) notfound( shared( Response ) r )                     { return r.status( 404 ); }
 
 /** Convenience function to set the HTTP response status message */
-shared(Response) msg( shared(Response) r, string m )                { r.statusMesg = m; return r; }
+shared( Response ) msg( shared( Response ) r, string m )                { r.statusMesg = m; return r; }
 /** Convenience function to set a $(D_PSYMBOL Response) header */
-shared(Response) header( shared(Response) r, string h, string v )   { r.headers[ h ] = v; return r; }
+shared( Response ) header( shared( Response ) r, string h, string v )   { r.headers[ h ] = v; return r; }
 /** Convenience function to set a $(D_PSYMBOL Response) content */
-shared(Response) content( shared(Response) r, string v )            { r.data = cast(shared ubyte[]) v.dup; return r; }
+shared( Response ) content( shared( Response ) r, string v )            { r.data = cast( shared ubyte[] ) v.dup; return r; }
 /** Convenience function to set a $(D_PSYMBOL Response) content */
-shared(Response) content( shared(Response) r, char[] v )            { r.data = cast(shared ubyte[]) v; return r; }
+shared( Response ) content( shared( Response ) r, char[] v )            { r.data = cast( shared ubyte[] ) v; return r; }
 /** Convenience function to set a $(D_PSYMBOL Response) content */
-shared(Response) content( shared(Response) r, ubyte[] v )           { r.data = cast(shared ubyte[]) v; return r; }
+shared( Response ) content( shared( Response ) r, ubyte[] v )           { r.data = cast( shared ubyte[] ) v; return r; }
 
 // ------------------------------------------------------------------------- //
 
-debug void dump( shared(Request) r, string title = "" )
+debug void dump( shared( Request ) r, string title = "" )
 {
     if( title.length > 0 )
         writeln( title );
@@ -531,15 +544,15 @@ debug void dump( shared(Request) r, string title = "" )
     writeln( "URI       : ", r.uri.idup );
 
     foreach( k, v; r.headers )
-        writeln( "\t", k.idup, ": ", v.idup );
+    writeln( "\t", k.idup, ": ", v.idup );
 
     foreach( k, v; r.attrs )
-        writeln( "\t", k.idup, ": ", v.idup );
+    writeln( "\t", k.idup, ": ", v.idup );
 }
 
 // ------------------------------------------------------------------------- //
 
-debug void dump( shared(Response) r, string title = "" )
+debug void dump( shared( Response ) r, string title = "" )
 {
     if( title.length > 0 )
         writeln( title );
@@ -548,9 +561,9 @@ debug void dump( shared(Response) r, string title = "" )
     writeln( "Status    : ", r.statusCode, " ", r.statusMesg.idup );
 
     foreach( k, v; r.headers )
-        writeln( "\t", k.idup, ": ", v.idup );
+    writeln( "\t", k.idup, ": ", v.idup );
 
-    dumpHex( cast(char[]) r.data );
+    dumpHex( cast( char[] ) r.data );
 }
 
 // ------------------------------------------------------------------------- //
@@ -565,17 +578,20 @@ debug void dumpHex( char[] buf, string title = "", int cols = 16 )
 
     char[ 256 ] b1;
     int x = 0, i = 0;
-    for(; i < buf.length; ++i )
+
+    for( ; i < buf.length; ++i )
     {
         if( x > 0 && i > 0 && i % cols == 0 )
         {
             writefln( "   %s", b1[ 0 .. x ] );
             x = 0;
         }
+
         b1[ x++ ] = .isPrintable( buf[ i ] ) ? buf[ i ] : '.';
         writef( "%02x ", buf[ i ] );
     }
-//		writefln( "\n(D) x = %d, i = %d", x, i );
+
+//      writefln( "\n(D) x = %d, i = %d", x, i );
     if( x > 0 )
         writefln( "%s   %s", ( cols > x ) ? replicate( "   ", cols - x ) : "", b1[ 0 .. x ] );
 }

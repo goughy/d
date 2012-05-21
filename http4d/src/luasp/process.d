@@ -1,34 +1,42 @@
 
-module luasp;
+module luasp.process;
+
 public import luad.all;
-import luad.stack, luad.c.all;
+import luad.stack, luad.error, luad.c.all;
 import std.file, std.datetime, std.stream, std.stdio, std.conv;
 
-enum LSP_WRITER    = "__luasp_writer";
-enum LSP_USE_CACHE = "__luasp_usecache";
-enum LSP_DSTATE    = "__luasp_state";
-
-alias void function( in string s ) LspWriter;
-
-LuaTable funcEnv;
-
+// ------------------------------------------------------------------------- //
 // ------------------------------------------------------------------------- //
 
-void stdoutWriter( in string s )
+interface LspCallback
 {
-    write( s );
+    void writer( in string content );
+    void log( in string msg );
+    string getHeader( in string name );
+    void setHeader( in string name, in string value );
+    void error( in string msg );
 }
 
 // ------------------------------------------------------------------------- //
+// ------------------------------------------------------------------------- //
+
+//Per thread function environment...
+LuaTable funcEnv;
 
 class LspState
 {
-    this( LuaState state )
+    this( LuaState st, LspCallback cb )
     {
-        L = state;
+        L   = st;
+        cb_ = cb;
     }
 
-    void doLsp( string filename, LuaTable args, LspWriter writer = &stdoutWriter )
+    ~this()
+    {
+        env_.release();
+    }
+
+    void doLsp( string filename )
     {
         if( funcEnv.isNil ) 
         {
@@ -36,7 +44,7 @@ class LspState
             //function environment
             funcEnv = L.newTable();
 
-            //populate the new environment with the full global env alos: see http://www.lua.org/pil/14.3.html
+            //populate the new environment with the full global env also: see http://www.lua.org/pil/14.3.html
             auto meta = L.newTable();
             meta[ "__index" ] = L.globals;
             funcEnv.setMetaTable( meta );
@@ -56,12 +64,10 @@ class LspState
             funcEnv[ "uuid_gen" ]       = &lsp_uuid_gen;
         }
 
-        funcEnv[ LSP_WRITER ]    = writer;
-        funcEnv[ LSP_USE_CACHE ] = cache_;
+        funcEnv[ "env" ]  = env();
+        funcEnv[ "args" ] = env[ "args" ];
 
-        funcEnv[ "args" ]        = args;
-        funcEnv[ "env" ]         = env();
-
+        debug writefln( "LSP: executing %s", filename );
         lsp_include( filename );
     }
 
@@ -78,34 +84,68 @@ class LspState
     @property bool cache()          { return cache_; }
     @property void cache( bool c )  { cache_ = c;    }
 
+    @property LspCallback callback() { return cb_; }
+
+    // ------------------------------------------------------------------------- //
+
+    string lsp_uuid_gen()
+    {
+        static immutable char hex[ 16 ] = 
+            [ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' ];
+
+        enum GUID_LEN = 16;
+
+        version(Posix)
+        {
+            auto bytes = cast(char[]) std.file.read( "/dev/urandom", GUID_LEN );
+            auto guid = std.array.appender!(char[])();
+            guid.reserve( GUID_LEN * 2 );
+            for( int i = 0; i < bytes.length; )
+            {
+                guid.put( hex[ bytes[ i ] / 16 ] );
+                guid.put( hex[ bytes[ i++ ] % 16 ] );
+            }
+            return guid.data.idup;
+        }
+    }
+
+    // ------------------------------------------------------------------------- //
+
 private:
 
     LuaState  L;
     LuaTable  env_;
+    LspCallback cb_;
     bool      cache_;
 
     // ------------------------------------------------------------------------- //
 
-    void lsp_include( in const(char[]) filename )
+    void lsp_include( in string filename )
     {
         auto f = loadLsp( filename );
         f.setEnvironment( funcEnv );
-        f();
+        try
+        {
+            f.call();
+        }
+        catch( LuaErrorException e )
+        {
+            cb_.error( e.toString() );
+        }
     }
 
     // ------------------------------------------------------------------------- //
 
     void lsp_echo( LuaObject[] params... )
     {
-        auto w = funcEnv[ LSP_WRITER ].to!LuaFunction;
         if( params.length > 0 )
         {
             foreach( param; params[ 0 .. $-1 ] )
             {
-                w( param.toString );
-                w( " " );
+                cb_.writer( param.toString );
+                cb_.writer( " " );
             }
-            w( params[ $-1 ].toString );
+            cb_.writer( params[ $-1 ].toString );
         }
     }
 
@@ -113,67 +153,73 @@ private:
 
     void lsp_print( LuaObject[] params... )
     {
-        auto w = funcEnv[ LSP_WRITER ].to!LuaFunction;
-
         if( params.length > 0 )
         {
             foreach( param; params[ 0 .. $ - 1 ] )
             {
-                w( param );
-                w( "\t" );
+                cb_.writer( param.toString );
+                cb_.writer( "\t" );
             }
-            w( params[ $ - 1 ] );
+            cb_.writer( params[ $ - 1 ].toString );
         }
-        w( "\n" );
+        cb_.writer( "\n" );
     }
 
     // ------------------------------------------------------------------------- //
 
-    const(char[]) lsp_url_decode( immutable(char[]) url )
+    string lsp_url_decode( string url )
     {
         return decodeUrl( url );
     }
 
     // ------------------------------------------------------------------------- //
 
-    void lsp_args_decode( const(char[]) args )
+    LuaTable lsp_args_decode( string args )
     {
+        //locate each k=v pair between '&' characters
+        //and push them to a new table...
+        auto result = L.newTable();
+        auto vals   = std.algorithm.splitter( args, "&" );
+        foreach( v; vals )
+        {
+            auto kv = std.algorithm.findSplit( v, "=" );
+            result[ kv[ 0 ] ] = decodeUrl( kv[ 2 ] );
+        }
+
+        return result;
     }
 
     // ------------------------------------------------------------------------- //
 
-    void lsp_log( const(char[]) msg )
+    void lsp_log( string msg )
     {
-        writeln( "LOG: ", msg );
+        cb_.log( msg );
     }
 
     // ------------------------------------------------------------------------- //
 
-    void lsp_content_type( const(char[]) type )
+    void lsp_content_type( string type )
     {
+        lsp_set_out_header( "Content-Type", type );
     }
 
     // ------------------------------------------------------------------------- //
 
-    void lsp_set_out_header( const(char[]) key, const(char[]) value )
+    void lsp_set_out_header( string key, string value )
     {
+        cb_.setHeader( key, value );
     }
 
     // ------------------------------------------------------------------------- //
 
-    void lsp_get_in_header( const(char[]) key )
+    string lsp_get_in_header( string key )
     {
+        return cb_.getHeader( key );
     }
 
     // ------------------------------------------------------------------------- //
 
-    void lsp_uuid_gen()
-    {
-    }
-
-    // ------------------------------------------------------------------------- //
-
-    LuaFunction loadLsp( const(char[]) filename )
+    LuaFunction loadLsp( string filename )
     {
         LuaFunction func;
 
@@ -206,12 +252,13 @@ private:
             }
         }
 
+        debug writefln( "LSP: loaded %s", filename );
         return func;
     }
 
     // ------------------------------------------------------------------------- //
 
-    LuaFunction parseLsp( const char[] filename )
+    LuaFunction parseLsp( string filename )
     {
         return L.loadString( parseLspFile( filename ) );
     }
@@ -241,7 +288,7 @@ private:
 
 // ------------------------------------------------------------------------- //
 
-const(char[]) parseLspFile( const(char[]) filename )
+const(char[]) parseLspFile( string filename )
 {
     immutable char chtype[ 256 ] =
     [
@@ -481,7 +528,7 @@ const(char[]) parseLspFile( const(char[]) filename )
 
 // ------------------------------------------------------------------------- //
 
-const(char[]) decodeUrl( immutable(char[]) url )
+string decodeUrl( string url )
 {
     static immutable char hex[256] =
     [
@@ -533,51 +580,10 @@ const(char[]) decodeUrl( immutable(char[]) url )
         }	
     }
     
-    return buf.data;
+    return buf.data.idup;
 }
 
 // ------------------------------------------------------------------------- //
-
-const(char[]) decodeArg( const(char[]) arg )
-{
-//    size_t offset1=0,length1=0;
-//    size_t offset2=0,length2=0;
-//
-//    size_t i;
-//
-//    for(i=0;i<len;++i)
-//    {    
-//        if(p[i]=='=')
-//        {
-//            length1=i-offset1;
-//            offset2=i+1;
-//        }else if(p[i]=='&')
-//        {
-//            length2=i-offset2;
-//
-//            if(length1 && length2)
-//            {	    
-//                lua_pushlstring(L,p+offset1,length1);
-//                urldecode(L,p+offset2,length2);
-//                lua_rawset(L,-3);
-//            }
-//
-//            offset1=i+1;
-//            length1=offset2=length2=0;
-//        }
-//    }
-//
-//    length2=i-offset2;
-//
-//    if(length1 && length2)
-//    {	    
-//        lua_pushlstring(L,p+offset1,length1);
-//        urldecode(L,p+offset2,length2);
-//        lua_rawset(L,-3);
-//    }
-
-    return "";
-}
 
 debug void onPanic( LuaState L, in char[] msg )
 {
@@ -586,17 +592,37 @@ debug void onPanic( LuaState L, in char[] msg )
 
 unittest 
 {
+    class CB : LspCallback
+    {
+        void writer( in string content ) { write( content ); }
+        void log( in string msg ) { writeln( "LOG: %s", msg ); }
+        string getHeader( in string name ) { return ""; }
+        void setHeader( in string name, in string value ) {  } 
+        void error( in string msg ) { writeln( "ERR: %s", msg ); }
+    }
     writeln( "Unit test executing" );
 
     LuaState L = new LuaState;
     L.openLibs();
     L.setPanicHandler( &onPanic );
 
-    LspState lsp = new LspState( L );
+    LspState lsp = new LspState( L, new CB );
+    assert( lsp.lsp_uuid_gen().length == 32 );
+    writeln( "UUID: ", lsp.lsp_uuid_gen() );
 
     //test URL decode
     assert( lsp.lsp_url_decode( "abc+def" ) == "abc def" );
     assert( lsp.lsp_url_decode( "abc%2C+def" ) == "abc, def" );
     assert( lsp.lsp_url_decode( "http://www.permadi.com/tutorial/urlEncoding/example.html?var=This+is+a+simple+%26+short+test." ) == "http://www.permadi.com/tutorial/urlEncoding/example.html?var=This is a simple & short test." );
+
+    auto res = lsp.lsp_args_decode( "abc=def&ghi=two+two%2C" );
+//    assert( res.length == 2 );
+    foreach( string k, string v; res )
+    {
+        debug writeln( k, " = ", v );
+        if( k == "abc" ) assert( v == "def" );
+        if( k == "ghi" ) assert( v == "two two," );
+    }
+
     writeln( "Unit test finished" );
 }
