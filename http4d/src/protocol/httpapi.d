@@ -52,7 +52,8 @@ Source: $(LINK2 https://github.com/goughy/d/tree/master/http4d, github.com)
 */
 
 module protocol.httpapi;
-import std.stdio, std.array, std.regex, std.typecons, std.ascii, std.string;
+import std.stdio, std.array, std.regex, std.typecons, std.ascii, std.string, std.conv;
+import std.concurrency;
 
 // ------------------------------------------------------------------------- //
 
@@ -173,7 +174,8 @@ public:
     {
         connection = id;
     }
-
+    
+    Tid             tid;
     string          connection;
     Method          method;
     string          protocol;
@@ -288,7 +290,7 @@ public:
 
     this()
     {
-        defHandler = ( req ) => req.getResponse().error( 404 );
+        defHandler = ( req ) => error( req.getResponse(), 404 );
     }
 
     RequestHandler defaultHandler( RequestHandler func )
@@ -298,12 +300,12 @@ public:
         return old;
     }
 
-    shared( Response ) opCall( shared( Request ) r )
+    HttpResponse opCall( HttpRequest r )
     {
         return dispatch( r );
     }
 
-    shared( Response ) dispatch( shared( Request ) req )
+    HttpResponse dispatch( HttpRequest req )
     {
         return defHandler( req );
     }
@@ -361,7 +363,7 @@ public:
         handlerMap ~= ht;
     }
 
-    override shared( Response ) dispatch( shared( Request ) req )
+    override HttpResponse dispatch( HttpRequest req )
     {
         foreach( handler; handlerMap )
         {
@@ -427,7 +429,7 @@ public:
         handlerMap ~= ht;
     }
 
-    override shared( Response ) dispatch( shared( Request ) req )
+    override HttpResponse dispatch( HttpRequest req )
     {
         foreach( handler; handlerMap )
         {
@@ -483,6 +485,20 @@ Method toMethod( string m )
 
 // ------------------------------------------------------------------------- //
 
+/**
+ * Parse an address of the form "x.x.x.x:yyyy" into a string address and 
+ * corresponding ushort port
+ */
+Tuple!(string,ushort) parseAddr( string addr )
+{
+    auto res = std.algorithm.findSplit( addr, ":" );
+    ushort port = (res.length == 3) ? to!ushort( res[ 2 ] ) : 8080; //default to 8080
+
+    return tuple( res[ 0 ], port );
+}
+
+// ------------------------------------------------------------------------- //
+
 string capHeader( char[] hdr )
 {
     bool up = true; //uppercase first letter
@@ -502,7 +518,7 @@ string capHeader( char[] hdr )
 // ------------------------------------------------------------------------- //
 
 /** Convenience function to set the HTTP response status code and message */
-shared( Response ) status( shared( Response ) r, int c, string m = null )
+HttpResponse status( HttpResponse r, int c, string m = null )
 {
     r.statusCode = c;
     r.statusMesg = m;
@@ -514,11 +530,11 @@ shared( Response ) status( shared( Response ) r, int c, string m = null )
 }
 
 /** Convenience function to set the HTTP response status code and message to '200 OK'*/
-shared( Response ) ok( shared( Response ) r )                           { return r.status( 200 ); }
+shared( Response ) ok( shared( Response ) r )                           { return status( r, 200 ); }
 /** Convenience function to set the HTTP response status code */
-shared( Response ) error( shared( Response ) r, int c )                 { return r.status( c ); }
+shared( Response ) error( shared( Response ) r, int c )                 { return status( r, c ); }
 /** Convenience function to set the HTTP response status code */
-shared( Response ) notfound( shared( Response ) r )                     { return r.status( 404 ); }
+shared( Response ) notfound( shared( Response ) r )                     { return status( r, 404 ); }
 
 /** Convenience function to set the HTTP response status message */
 shared( Response ) msg( shared( Response ) r, string m )                { r.statusMesg = m; return r; }

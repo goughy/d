@@ -685,16 +685,18 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
  * Thread entry point for AJP processing
  */
 
-void ajpServe( string address, ushort port, Tid tid )
+void ajpServe( string bindAddr, Tid tid )
 {
-    ajpServeImpl( address, port, new TidProcessor( tid, "[AJP-D] " ) );
+    auto res = parseAddr( bindAddr );
+    ajpServeImpl( res[ 0 ], res[ 1 ], new TidProcessor( tid, "[AJP-D] " ) );
 }
 
 // ------------------------------------------------------------------------- //
 
-void ajpServe( string address, ushort port, shared( Response ) delegate( shared( Request ) ) dg )
+void ajpServe( string bindAddr, RequestDelegate dg )
 {
-    ajpServeImpl( address, port, new DelegateProcessor( dg, "[AJP-D] " ) );
+    auto res = parseAddr( bindAddr );
+    ajpServeImpl( res[ 0 ], res[ 1 ], new DelegateProcessor( dg, "[AJP-D] " ) );
 }
 
 // ------------------------------------------------------------------------- //

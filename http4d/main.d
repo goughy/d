@@ -65,11 +65,13 @@ extern(C) void sigint_handler( int sig_no )
 // ------------------------------------------------------------------------- //
 
 void function( string address, ushort port, Tid tid ) asyncEntry;
-void function( string address, ushort port, shared(Response) delegate(shared(Request)) dg ) syncEntry;
+void function( string address, ushort port, HttpResponse delegate(HttpRequest) dg ) syncEntry;
+
+// ------------------------------------------------------------------------- //
 
 int main( string[] args )
 {
-    string addr = "0.0.0.0";
+    string addr = "0.0.0.0:8888";
     ushort port = 8888;
     bool   sync = false;
     bool   http = true;
@@ -77,34 +79,29 @@ int main( string[] args )
     bool   zmq  = false;
     getopt( args, 
             "a|addr", &addr,
-            "p|port", &port,
             "s|sync", &sync,
             "http", &http,
             "ajp", &ajp,
             "zmq", &zmq );
 
-//    writefln( "1C = %d", hexToULong( cast(ubyte[])"031C".dup ) );
-
     sigaction_t action;
     action.sa_handler = &sigint_handler;
     sigaction( SIGINT, &action, null );
 
-    if( sync )
-        syncEntry = zmq ? &mongrel2Serve : (ajp ? &ajpServe : &httpServe);
-    else
-        asyncEntry = zmq ? &mongrel2Serve : (ajp ? &ajpServe : &httpServe);
+    HttpResponse delegate(HttpRequest) dg = (HttpRequest req) => handleRequest( req ,"sync" );
 
     if( sync )
     {
-            syncEntry( addr, port, 
-                    (shared(Request) req)
-                    {
-                        return handleRequest( req, "sync" );
-                    } );
+        if( zmq )       mongrel2Serve( "127.0.0.1:8888", "127.0.0.1:8887", dg );
+        else if( ajp )  ajpServe( addr, dg );
+        else            httpServe( addr, dg );
     }
     else
     {
-        tid = spawnLinked( asyncEntry, addr, port, thisTid() );
+        if( zmq )       tid = spawnLinked( &mongrel2Serve, "127.0.0.1:8888", "127.0.0.1:8887", thisTid() );
+        else if( ajp )  tid = spawnLinked( &ajpServe, addr, thisTid() );
+        else            tid = spawnLinked( &httpServe, addr, thisTid() );
+
         while( !shutdown )
         {
             try
@@ -114,7 +111,7 @@ int main( string[] args )
                         {
                             writefln( "MAIN: %s", s );
                         },
-                        ( shared(Request) req )         
+                        ( HttpRequest req )         
                         { 
                             send( tid, handleRequest( req, "async" ) );
                         },
@@ -130,7 +127,7 @@ int main( string[] args )
             }
         }
     }
-    
+   
     writeln( "Bye" );
     return 0;
 }
@@ -139,14 +136,14 @@ int main( string[] args )
 
 
 int idx = 0;
-shared(Response) handleRequest( shared(Request) req, string type )
+HttpResponse handleRequest( HttpRequest req, string type )
 {
     debug writeln( "Handling HTTP request for URI: " ~ req.uri );
 //    writeln( to!string( idx ) );
-    dump( req );
+//    dump( req );
 
     //auto fn = pipe!( ok, header)
-    shared Response resp = req.getResponse();
+    HttpResponse resp = req.getResponse();
     //Response resp = new Response( req.connection );
     if( exists( req.uri[ 1 .. $ ] ) ) //strip leading '/'
     {
@@ -187,7 +184,7 @@ shared(Response) handleRequest( shared(Request) req, string type )
             resp.data = cast(shared ubyte[]) d;
         }
     }
-//    writefln( "(D) sending return data length %d", d.length );
+//    writefln( "(D) sending return data length %d", resp.data.length );
     return resp;
 }
 

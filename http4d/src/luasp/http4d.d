@@ -25,7 +25,7 @@ enum COOKIE_NAME = "LSPSESSID";
 
 // ------------------------------------------------------------------------- //
 
-class GlueCallback : LspCallback
+class Http4dCallback : LspCallback
 {
     void writer( in string content )
     {
@@ -74,31 +74,52 @@ private:
 
 // ------------------------------------------------------------------------- //
 
-void luaspServe( string dir, string addr = "0.0.0.0", ushort port = 8080 )
+LspState tlsState;
+
+// ------------------------------------------------------------------------- //
+
+class LSPDispatch : Dispatch
 {
-    LuaState L = new LuaState;
-    //L.setPanicHandler( &onPanic );
-    L.openLibs();
+    this( string d )
+    {
+        dir = d;
+        lsp = new LspState( new Http4dCallback );
+    }
 
-    auto lsp = new LspState( L, new GlueCallback );
-    lsp.cache = false;
+    override HttpResponse dispatch( HttpRequest req )
+    {
+        return handleRequest( lsp, dir, req );
+    }
 
-    httpServe( addr, port, ( req ) => handleRequest( lsp, dir, req ) );
+private:
+
+    string   dir;
+    LspState lsp;
+}
+
+// ------------------------------------------------------------------------- //
+
+void luaspServe( string dir, string addr = "0.0.0.0:8080" )
+{
+    auto lsp = new LspState( new Http4dCallback );
+//    lsp.cache = false;
+
+    httpServe( addr, ( req ) => handleRequest( lsp, dir, req ) );
 }
 
 // ------------------------------------------------------------------------- //
 
 private HttpResponse handleRequest( LspState lsp, string dir, HttpRequest req )
 {
-    GlueCallback callback = cast( GlueCallback ) lsp.callback;
+    Http4dCallback callback = cast(Http4dCallback) lsp.callback;
     callback.setRequest( req );
 
-    lsp.env[ "filename" ] = req.uri;
+    lsp.env.set( "filename", req.uri );
 
     if( "Query-String" in req.attrs )
-        lsp.env[ "args" ] = req.attrs[ "Query-String" ];
+        lsp.env.set( "args", req.attrs[ "Query-String" ] );
     else
-        lsp.env[ "args" ] = "";
+        lsp.env.set( "args", "" );
 
     string sessionId = "";
 
@@ -113,21 +134,20 @@ private HttpResponse handleRequest( LspState lsp, string dir, HttpRequest req )
         callback.setHeader( "Set-Cookie", std.string.format( "%s=%s; expires=%s", COOKIE_NAME, sessionId, formatExpires( expires ) ) );
     }
 
-    lsp.env[ "session" ]            = sessionId;
-    lsp.env[ "hostname" ]           = req.headers[ "Host" ];
-    lsp.env[ "remote_ip" ]          = req.attrs[ "Remote-Host" ];
-    lsp.env[ "server_admin" ]       = req.attrs[ "Server-Admin" ];
-    lsp.env[ "server_hostname" ]    = req.attrs[ "Server-Host" ];
-    lsp.env[ "method" ]             = to!string( req.method );
-    lsp.env[ "uri" ]                = req.uri;
+    lsp.env.set( "session", sessionId );
+    lsp.env.set( "hostname", req.headers[ "Host" ] );
+    lsp.env.set( "remote_ip", req.attrs[ "Remote-Host" ] );
+    lsp.env.set( "server_admin", req.attrs[ "Server-Admin" ] );
+    lsp.env.set( "server_hostname", req.attrs[ "Server-Host" ] );
+    lsp.env.set( "method", to!string( req.method ) );
+    lsp.env.set( "uri", req.uri );
 
 //    callback.log( "locating URI " ~ req.uri );
     string file = locateLsp( dir, req.uri );
-
     if( file.length == 0 ) //not found
-        return req.getResponse().status( 404 );
+        return status( req.getResponse(), 404 );
 
-    callback.log( "executing LSP " ~ file );
+    callback.log( "Executing LSP " ~ file );
     lsp.doLsp( file );
 
     return callback.getResponse();

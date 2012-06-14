@@ -2,9 +2,10 @@
 LuaD = "/data/devel-ext/LuaD"
 
 solution "http4d"
-    configurations { "debug", "release", "test" }
+    configurations { "debug", "release" }
     includedirs { "src", "src/cjson", "src/deimos", LuaD } 
     buildoptions "-Dddoc"
+--    location "build"
 
     configuration "debug"
         flags { "Symbols", "ExtraWarnings" }
@@ -19,30 +20,20 @@ solution "http4d"
         buildoptions "-unittest"
         flags { "Symbols", "ExtraWarnings" }
 
-    project "cJSON"
-        kind "StaticLib"
-        language "C"
-        files { "src/cjson/*.c" }
-
     project "http4d"
-        kind "StaticLib"
-        language "D"
-        files { "*.d", "src/*.d", "src/protocol/*.d", "src/luasp/*.d" }
-        excludes { "main.d" }
-
-    project "test"
         kind "ConsoleApp"
         language "D"
-        files { "test.d" }
-        links { "http4d", "cJSON", "zmq" }
+        files { "main.d", "src/protocol/*.d" }
+        links { "zmq" }
+
 
     project "lsp"
         kind "ConsoleApp"
         language "D"
-        files { "examples/luasp/lsp.d" }
-        libdirs { LuaD }
-        linkoptions { LuaD .. "/lua-5.1.5/src/liblua.a" }
-        links { "http4d", "cJSON", "zmq", "luad", "dl" }
+--        buildoptions "-v"
+        files { "examples/luasp/lsp.d", "src/protocol/*.d", "src/luasp/*.d" }
+        libdirs { LuaD .. "/lib" }
+        links { "luad", "lua", "zmq", "dl" }
 --[[
     project "ex1"
         kind "ConsoleApp"

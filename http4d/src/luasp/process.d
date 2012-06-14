@@ -20,15 +20,26 @@ interface LspCallback
 // ------------------------------------------------------------------------- //
 // ------------------------------------------------------------------------- //
 
-//Per thread function environment...
 LuaTable funcEnv;
+
+void luaPanic( LuaState L , const(char[]) msg )
+{
+    writefln( "LUA:PANIC:%s", msg );
+    throw new LuaErrorException( msg.idup );
+}
+
+// ------------------------------------------------------------------------- //
 
 class LspState
 {
-    this( LuaState st, LspCallback cb )
+    this( LspCallback cb )
     {
-        L   = st;
+        L   = new LuaState;
+//        L.setPanicHandler( &luaPanic );
+        L.openLibs();
+
         cb_ = cb;
+        cache_ = false;
     }
 
     ~this()

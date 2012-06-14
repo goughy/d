@@ -56,7 +56,7 @@ alias shared(Response) delegate(shared(Request)) RequestDelegate;
 * int main( string[] args )
 *
 {
-    *     httpServe( "127.0.0.1", 8888,
+    *     httpServe( "127.0.0.1:8888",
     * ( req ) => req.getResponse().
     *                             status( 200 ).
     *                             header( "Content-Type", "text/html" ).
@@ -67,9 +67,12 @@ alias shared(Response) delegate(shared(Request)) RequestDelegate;
 * ---
 */
 
-void httpServe( string address, ushort port, RequestDelegate dg )
+void httpServe( string bindAddr, RequestDelegate dg )
 {
-    httpServeImpl( address, port, new DelegateProcessor( dg, "[HTTP-D] " ) );
+    auto res = parseAddr( bindAddr );
+    HttpProcessor proc = new DelegateProcessor( dg, "[HTTP-D] " );
+    proc.onLog( "Executing in SYNC mode" );
+    httpServeImpl( res[ 0 ], res[ 1 ], proc );
 }
 
 // ------------------------------------------------------------------------- //
@@ -118,9 +121,12 @@ void httpServe( string address, ushort port, RequestDelegate dg )
  * ---
  */
 
-void httpServe( string address, ushort port, Tid tid )
+void httpServe( string bindAddr, Tid tid )
 {
-    httpServeImpl( address, port, new TidProcessor( tid, "[HTTP-D] " ) );
+    auto res = parseAddr( bindAddr );
+    HttpProcessor proc = new TidProcessor( tid, "[HTTP-D] " );
+    proc.onLog( "Executing in ASYNC mode" );
+    httpServeImpl( res[ 0 ], res[ 1 ], proc );
 }
 
 // ------------------------------------------------------------------------- //
@@ -452,6 +458,7 @@ public:
 
     void onRequest( shared( Request ) req )
     {
+        req.tid = cast(shared) thisTid();
         send( tid, req );
     }
 
@@ -492,7 +499,7 @@ class DelegateProcessor : HttpProcessor
 {
 public:
 
-    this( shared( Response ) delegate( shared( Request ) ) d, string logPrefix = "[HTTP] " )
+    this( HttpResponse delegate(HttpRequest) d, string logPrefix = "[HTTP] " )
     {
         dg = d;
         prefix = logPrefix;
@@ -513,9 +520,9 @@ public:
         onLog( "Protocol exiting (SYNC mode)" );
     }
 
-    void onRequest( shared( Request ) req )
+    void onRequest( HttpRequest req )
     {
-        shared Response resp = dg( req );
+        HttpResponse resp = dg( req );
 
         if( resp !is null )
         {
@@ -539,9 +546,9 @@ public:
         return tmp;
     }
 
-private:
+protected:
 
-    shared( Response ) delegate( shared( Request ) ) dg;
+    HttpResponse delegate(HttpRequest) dg;
     string prefix;
     bool   hadData;
 }
@@ -574,7 +581,7 @@ Tuple!( shared( Request ), ulong ) parseHttpHeaders( ubyte[] buf )
     line.popFront;
     req.protocol = ( cast( char[] ) line.front ).idup;
 
-    auto tmp = std.algorithm.splitter( req.uri, '?' );
+    auto tmp = std.algorithm.splitter( cast(string) req.uri, "?" );
 
     if( !tmp.empty )
     {
@@ -612,7 +619,7 @@ Tuple!( shared( Request ), ulong ) parseHttpHeaders( ubyte[] buf )
 
 // ------------------------------------------------------------------------- //
 
-Tuple!( ubyte[], bool ) toHttpResponse( shared( Response ) r )
+Tuple!( ubyte[], bool ) toHttpResponse( HttpResponse r )
 {
     auto buf = appender!( ubyte[] )();
     buf.reserve( 512 );
@@ -663,7 +670,7 @@ Tuple!( ubyte[], bool ) toHttpResponse( shared( Response ) r )
     if( r.data.length > 0 )
         buf.put( cast( ubyte[] ) r.data );
 
-    debug dumpHex( cast( char[] ) buf.data, "HTTP RESPONSE" );
+//    debug dumpHex( cast( char[] ) buf.data, "HTTP RESPONSE" );
     return tuple( buf.data, needsClose );
 }
 
