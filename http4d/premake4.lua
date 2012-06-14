@@ -3,7 +3,7 @@ LuaD = "/data/devel-ext/LuaD"
 
 solution "http4d"
     configurations { "debug", "release" }
-    includedirs { "src", "src/cjson", "src/deimos", LuaD } 
+    includedirs { "src", "src/deimos" } 
     buildoptions "-Dddoc"
 --    location "build"
 
@@ -31,6 +31,7 @@ solution "http4d"
         kind "ConsoleApp"
         language "D"
 --        buildoptions "-v"
+        includedirs { LuaD }
         files { "examples/luasp/lsp.d", "src/protocol/*.d", "src/luasp/*.d" }
         libdirs { LuaD .. "/lib" }
         links { "luad", "lua", "zmq", "dl" }
@@ -39,24 +40,24 @@ solution "http4d"
         kind "ConsoleApp"
         language "D"
         files { "examples/ex1.d" }
-        links { "http4d", "cJSON", "zmq" }
+        links { "http4d", "zmq" }
 
     project "ex2"
         kind "ConsoleApp"
         language "D"
         files { "examples/ex2.d" }
-        links { "http4d", "cJSON", "zmq" }
+        links { "http4d", "zmq" }
 
     project "ex3"
         kind "ConsoleApp"
         language "D"
         files { "examples/ex3.d" }
-        links { "http4d", "cJSON", "zmq" }
+        links { "http4d", "zmq" }
 
     project "ex4"
         kind "ConsoleApp"
         language "D"
         files { "examples/ex4.d" }
-        links { "http4d", "cJSON", "zmq" }
+        links { "http4d", "zmq" }
 --]]
 
