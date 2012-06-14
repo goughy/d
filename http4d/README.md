@@ -8,7 +8,7 @@ Supported Protocols:
 
  * HTTP (internal implementation)
  * AJP  (internal implementation but incomplete)
- * Mongrel2 (Relies on the ZMQ library)
+ * Mongrel2 (Requires 0MQ)
 
 It provides a very simple interface using request/response style making it very
 easy to dispatch, route and handle a variety of web requests.
@@ -74,26 +74,21 @@ Using Premake, the following should be all that's required:
     $ premake4 gmake
     $ make
 
-and you will have a 'libcJSON.a' and a 'libhttp4d.a' library to link to for
-your application.
+and you will have an example 'http4d' and 'lsp' commands to execute.
+
+To use in your own application, simply include the single interface file from
+the src/protocol/ directory, and link in the 0MQ library.  As the code uses
+the Deimos 0MQ wrapper, youi will need to provide access to this code, but as
+stated above, this is supplied as a convenience.
 
 If you do not wish to use Premake, the following commands are the underlying
 build mechanics:
 
-libcJSON
---------
+http4d
+------
 
-    $ cc -MMD -MP  -Isrc -Isrc/cjson -g -Wall -Dddoc -o "obj/debug/cJSON/cJSON.o" -MF obj/debug/cJSON/cJSON.d -c "src/cjson/cJSON.c"
-    $ ar -rcs ./libcJSON.a obj/debug/cJSON/cJSON.o 
+    $ dmd -g -w  -debug -Dddoc  -Isrc -Isrc/deimos   -L-lzmq -odobj/debug/http4d -ofhttp4d main.d src/protocol/ajp.d src/protocol/http.d src/protocol/mongrel2.d src/protocol/httpapi.d
 
-libhttp4d
----------
-
-    $ dmd -g -w  -lib -debug -Dddoc  -Isrc -Isrc/cjson -Isrc/deimos    -oflibhttp4d.a test.d src/protocol/ajp.d src/protocol/http.d src/protocol/mongrel2.d src/protocol/httpapi.d
-
-then linking with your own application involves the following:
-
-    $ dmd -g -w  -debug  -Ipath/to/http4d/src -Ipath/to/http4d/src/deimos  -L-Lpath/to/http4d -L-lhttp4d -L-lcJSON -L-lzmq -oftest main.d
 
 Enjoy!
 
