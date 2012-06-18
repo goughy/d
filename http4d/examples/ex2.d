@@ -11,7 +11,7 @@ import protocol.http;
 
 int main( string[] args )
 {
-    Tid tid = spawnLinked( &httpServe, "127.0.0.1", cast(ushort) 8888, thisTid() );
+    Tid tid = spawnLinked( &httpServe, "127.0.0.1:8888", thisTid() );
 
     bool shutdown = false;
     while( !shutdown )
@@ -20,7 +20,7 @@ int main( string[] args )
         {
             receive( 
                 ( string s ) { writefln( "MAIN: %s", s ); }, //process library logging
-                ( shared(Request) req )         
+                ( HttpRequest req )         
                 { 
                     send( tid, handleReq( req ) );
                 },
@@ -35,7 +35,7 @@ int main( string[] args )
     return 0;
 }
 
-shared(Response) handleReq( shared(Request) req )
+HttpResponse handleReq( HttpRequest req )
 {
      return req.getResponse().
              status( 200 ).

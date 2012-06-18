@@ -352,8 +352,7 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
     {
         ptmp.length = 0;
 
-        int num = zmq_poll( pitem.ptr, cast( int ) pitem.length, receivedData ? 0 : TIMEOUT_USEC / 1000 );
-
+        int num = zmq_poll( pitem.ptr, cast( int ) pitem.length, receivedData ? 0 : TIMEOUT_USEC );
         if( num > 0 || receivedData )
         {
             for( long i = 0; i < pitem.length; i++ )

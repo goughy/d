@@ -78,7 +78,7 @@ LspState tlsState;
 
 // ------------------------------------------------------------------------- //
 
-class LSPDispatch : Dispatch
+class LspRouter : Router
 {
     this( string d )
     {
@@ -102,7 +102,7 @@ private:
 void luaspServe( string dir, string addr = "0.0.0.0:8080" )
 {
     auto lsp = new LspState( new Http4dCallback );
-//    lsp.cache = false;
+    lsp.cache = false;
 
     httpServe( addr, ( req ) => handleRequest( lsp, dir, req ) );
 }

@@ -10,7 +10,7 @@ import protocol.http;
 
 int main( string[] args )
 {
-    httpServe( "127.0.0.1", 8888,
+    httpServe( "127.0.0.1:8888",
                 (req) => req.getResponse().
                             status( 200 ).
                             header( "Content-Type", "text/html" ).

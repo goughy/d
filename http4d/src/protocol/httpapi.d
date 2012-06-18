@@ -279,12 +279,12 @@ alias shared( Response ) HttpResponse;
 // ------------------------------------------------------------------------- //
 
 /**
- * Dispatcher base class for setting the default handler and providing
+ * Routerer base class for setting the default handler and providing
  * $(D_PSYMBOL opCall()).  DO NOT USE! Use one of the subclasses instead (or
  * subclass your own)
  */
 
-class Dispatch
+class Router
 {
 public:
 
@@ -318,7 +318,7 @@ protected:
 // ------------------------------------------------------------------------- //
 
 /**
- * A convenience class that provides a dispatch mecahnism based on the
+ * A convenience class that provides a dispatch mechanism based on the
  * HTTP Method in a $(D_PSYMBOL Request).
  *
  * Example:
@@ -328,7 +328,7 @@ protected:
  *
  * int main( string[] args )
  * {
- *     MethodDispatch dispatcher = new MethodDispatch;
+ *     MethodRouter dispatcher = new MethodRouter;
  *     dispatcher.mount( Method.GET, &onGet );
  *     dispatcher.mount( Method.POST, &onPost );
  *
@@ -351,15 +351,25 @@ protected:
  * ---
  */
 
-class MethodDispatch : Dispatch
+class MethodRouter : Router
 {
 public:
 
     void mount( Method m, RequestHandler func )
     {
+        mount( m, std.functional.toDelegate( func ) );
+    }
+
+    void mount( Method m, Router d )
+    {
+        mount( m, &d.dispatch );
+    }
+
+    void mount( Method m, RequestDelegate dg )
+    {
         HandlerType ht;
         ht.m = m;
-        ht.f = func;
+        ht.f = dg;
         handlerMap ~= ht;
     }
 
@@ -375,7 +385,8 @@ public:
 
 private:
 
-    alias Tuple!( Method, "m", RequestHandler, "f" ) HandlerType;
+    alias HttpResponse delegate(HttpRequest) RequestDelegate;
+    alias Tuple!( Method, "m", RequestDelegate, "f" ) HandlerType;
     HandlerType[]  handlerMap;
 }
 
@@ -391,7 +402,7 @@ private:
  *
  * int main( string[] args )
  * {
- *     UriDispatch dispatcher = new UriDispatch;
+ *     UriRouter dispatcher = new UriRouter;
  *     dispatcher.mount( regex( "/abc$" ), &onABC );
  *     dispatcher.mount( regex( "/def$" ), &onDEF );
  *
@@ -417,16 +428,23 @@ private:
  * ---
  */
 
-class UriDispatch : Dispatch
+class UriRouter : Router
 {
 public:
 
-    void mount( Regex!char regex, RequestHandler func )
+    void mount( string r, RequestHandler func )
     {
-        HandlerType ht;
-        ht.r = regex;
-        ht.f  = func;
-        handlerMap ~= ht;
+        mount( regex( r ), std.functional.toDelegate( func ) );
+    }
+
+    void mount( string r, Router d )
+    {
+        mount( regex( r ), &d.dispatch );
+    }
+
+    void mount( string r, RequestDelegate dg )
+    {
+        mount( regex( r ), dg );
     }
 
     override HttpResponse dispatch( HttpRequest req )
@@ -441,7 +459,16 @@ public:
 
 private:
 
-    alias Tuple!( Regex!char, "r", RequestHandler, "f" ) HandlerType;
+    void mount( Regex!char regex, RequestDelegate dg )
+    {
+        HandlerType ht;
+        ht.r = regex;
+        ht.f  = dg;
+        handlerMap ~= ht;
+    }
+
+    alias HttpResponse delegate(HttpRequest) RequestDelegate;
+    alias Tuple!( Regex!char, "r", RequestDelegate, "f" ) HandlerType;
     HandlerType[] handlerMap;
 }
 
