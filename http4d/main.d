@@ -140,7 +140,7 @@ HttpResponse handleRequest( HttpRequest req, string type )
 {
     debug writeln( "Handling HTTP request for URI: " ~ req.uri );
 //    writeln( to!string( idx ) );
-//    dump( req );
+//    debug dump( req );
 
     //auto fn = pipe!( ok, header)
     HttpResponse resp = req.getResponse();
@@ -184,7 +184,7 @@ HttpResponse handleRequest( HttpRequest req, string type )
             resp.data = cast(shared ubyte[]) d;
         }
     }
-//    writefln( "(D) sending return data length %d", resp.data.length );
+    debug writefln( "(D) sending return data length %d", resp.data.length );
     return resp;
 }
 

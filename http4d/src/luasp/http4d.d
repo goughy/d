@@ -91,6 +91,12 @@ class LspRouter : Router
         return handleRequest( lsp, dir, req );
     }
 
+    override void dumpRoutes()
+    {
+        writefln( "LspRouter::dumpRoutes()" );
+        writefln( "\tProcessing LSP files from %s", dir );
+    }
+
 private:
 
     string   dir;
@@ -142,7 +148,7 @@ private HttpResponse handleRequest( LspState lsp, string dir, HttpRequest req )
     lsp.env.set( "method", to!string( req.method ) );
     lsp.env.set( "uri", req.uri );
 
-//    callback.log( "locating URI " ~ req.uri );
+    callback.log( "locating URI " ~ req.uri );
     string file = locateLsp( dir, req.uri );
     if( file.length == 0 ) //not found
         return status( req.getResponse(), 404 );

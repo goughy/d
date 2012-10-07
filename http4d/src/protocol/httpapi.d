@@ -182,11 +182,13 @@ public:
     string          uri;
     string[string]  headers;
     string[string]  attrs;
+    bool            dataIsPath; // if TRUE, 'data' is the path to a file containing
+                                // the request payload (ie. it was big!)
     ubyte[]         data;
 
     string getHeader( string k )
     {
-        return headers[ capHeader( k.dup ) ];
+        return headers[ capHeaderInPlace( k.dup ) ];
     }
 
     string getAttr( string k )
@@ -240,7 +242,7 @@ public:
 
     shared( Response ) addHeader( string k, string v )
     {
-        headers[ capHeader( k.dup ) ] = v;
+        headers[ capHeaderInPlace( k.dup ) ] = v;
         return this;
     }
 }
@@ -279,7 +281,7 @@ alias shared( Response ) HttpResponse;
 // ------------------------------------------------------------------------- //
 
 /**
- * Routerer base class for setting the default handler and providing
+ * Router base class for setting the default handler and providing
  * $(D_PSYMBOL opCall()).  DO NOT USE! Use one of the subclasses instead (or
  * subclass your own)
  */
@@ -309,6 +311,8 @@ public:
     {
         return defHandler( req );
     }
+
+    abstract void dumpRoutes();
 
 protected:
 
@@ -355,22 +359,39 @@ class MethodRouter : Router
 {
 public:
 
-    void mount( Method m, RequestHandler func )
+    MethodRouter mount( Method m, RequestHandler func )
     {
-        mount( m, std.functional.toDelegate( func ) );
+        return mount( m, std.functional.toDelegate( func ) );
     }
 
-    void mount( Method m, Router d )
+    MethodRouter mount( Method m, Router d )
     {
-        mount( m, &d.dispatch );
+        return mount( m, &d.dispatch );
     }
 
-    void mount( Method m, RequestDelegate dg )
+    MethodRouter mount( Method m, RequestDelegate dg )
     {
         HandlerType ht;
         ht.m = m;
         ht.f = dg;
         handlerMap ~= ht;
+
+        return this;
+    }
+
+    // Map all methods to their respective functions
+    // so you can do for all HTTP methods defined in Method:
+    //      
+    //      MethodRouter r = new MethodRouter;
+    //      r.get( & getHandler );
+    //      r.post( & postHandler );
+    //      r.head( & headHandler );
+    //
+    //  ...etc...
+    //
+    MethodRouter opDispatch(string op, T)( T func ) if( is(T : RequestHandler) )
+    {
+        mixin( "return mount( Method."  ~ op.toUpper ~ ", func );" );
     }
 
     override HttpResponse dispatch( HttpRequest req )
@@ -381,6 +402,15 @@ public:
                 return handler.f( req );
         }
         return defHandler( req );
+    }
+
+    override void dumpRoutes()
+    {
+        writefln( "MethodRouter::dumpRoutes()" );
+        foreach( handler; handlerMap )
+        {
+            writefln( "\t%s -> %s", to!string( handler.m ), to!string( handler.f ) );
+        }
     }
 
 private:
@@ -432,19 +462,19 @@ class UriRouter : Router
 {
 public:
 
-    void mount( string r, RequestHandler func )
+    UriRouter mount( string r, RequestHandler func )
     {
-        mount( regex( r ), std.functional.toDelegate( func ) );
+        return mountImpl( r, std.functional.toDelegate( func ) );
     }
 
-    void mount( string r, Router d )
+    UriRouter mount( string r, Router d )
     {
-        mount( regex( r ), &d.dispatch );
+        return mountImpl( r, &d.dispatch );
     }
 
-    void mount( string r, RequestDelegate dg )
+    UriRouter mount( string r, RequestDelegate dg )
     {
-        mount( regex( r ), dg );
+        return mountImpl( r, dg );
     }
 
     override HttpResponse dispatch( HttpRequest req )
@@ -457,27 +487,131 @@ public:
         return defHandler( req );
     }
 
+    override void dumpRoutes()
+    {
+        writefln( "UriRouter::dumpRoutes()" );
+        foreach( handler; handlerMap )
+        {
+            writefln( "\t%s -> %s", handler.u, to!string( handler.f ) );
+        }
+    }
+
 private:
 
-    void mount( Regex!char regex, RequestDelegate dg )
+    UriRouter mountImpl( string r, RequestDelegate dg )
     {
         HandlerType ht;
-        ht.r = regex;
+        ht.u = r;
+        ht.r = regex( r );
         ht.f  = dg;
         handlerMap ~= ht;
+
+        return this;
     }
 
     alias HttpResponse delegate(HttpRequest) RequestDelegate;
-    alias Tuple!( Regex!char, "r", RequestDelegate, "f" ) HandlerType;
+    alias Tuple!( string, "u", Regex!char, "r", RequestDelegate, "f" ) HandlerType;
     HandlerType[] handlerMap;
 }
+
+// ------------------------------------------------------------------------- //
+
+class AutoRouter(T) : Router
+{
+public:
+
+    this( string base = "/" )
+    {
+        instance     = new T;
+        methodRouter = new MethodRouter;
+
+        init( base );
+    }
+
+
+    override HttpResponse dispatch( HttpRequest req )
+    {
+        return methodRouter( req );
+    }
+
+    override void dumpRoutes()
+    {
+        writefln( "AutoRouter!" ~ T.stringof ~ "::dumpRoutes()" );
+        methodRouter.dumpRoutes();
+        foreach( s,r; uriRouters )
+            r.dumpRoutes();
+    }
+
+private:
+
+
+    void init( string base )
+    {
+        //CTFE
+        static string ctfeMemberFuncs(T)()
+        {
+            string s = "";
+            foreach( mbr; __traits(derivedMembers, T) )
+            {
+                std.traits.ParameterTypeTuple!(__traits(getMember, T, mbr)) args;
+
+                static if( args.length == 1 && typeof( args[ 0 ] ).stringof == HttpRequest.stringof && 
+                            std.traits.ReturnType!(__traits(getMember, T, mbr)).stringof == HttpResponse.stringof )
+                {
+                    pragma( msg, "Processing member " ~ T.stringof ~ "." ~ mbr );
+                    foreach( meth; __traits(allMembers,Method) )
+                    {
+                        static if( meth == to!string( Method.UNKNOWN ) )
+                            continue;
+
+                        auto r = std.algorithm.findSplit( mbr.toLower, to!string( meth ).toLower );
+                        if( !r[1].empty )
+                            s = s ~ "makeMount( Method." ~ meth ~ ", \"" ~ r[ 2 ] ~ "\", &instance." ~ mbr ~ ");";
+                    }
+                }
+                else
+                    pragma( msg, "Unrecognised signature on member " ~ T.stringof ~ "." ~ mbr ~ " - ignoring" );
+            }
+            return s;
+        }
+
+        //runtime
+        void makeMount( Method method, string mountPoint, HttpResponse delegate(HttpRequest) handler )
+        {
+            UriRouter uriRouter;
+            if( method in uriRouters )
+                uriRouter = uriRouters[ method ];
+            else
+            {
+                uriRouter = new UriRouter;
+                uriRouters[ method ] = uriRouter;
+            }
+            if( base[ $ - 1 ] == '/' )
+                base = base[ 0 .. $ - 1 ];
+
+            writeln( "Mounting method " ~ to!string( method ) ~ " to URI " ~ base ~ "/" ~ mountPoint );
+            uriRouter.mount( "^" ~ base ~ "/" ~ mountPoint ~ "$", handler );
+            methodRouter.mount( method, uriRouter );
+        }
+
+        mixin( ctfeMemberFuncs!(T) );
+
+        if( uriRouters.length == 0 )
+            stderr.writeln( "WARN: failed to extract any routes from specified type: " ~ T.stringof );
+    }
+
+    T                 instance;
+    MethodRouter      methodRouter;
+    UriRouter[Method] uriRouters;
+}
+
 
 // ------------------------------------------------------------------------- //
 
 Method toMethod( string m )
 {
     //enum Method { UNKNOWN, OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT };
-    switch( m.toLower() )
+    switch( m.toLower )
     {
         case "get":
             return Method.GET;
@@ -520,13 +654,12 @@ Tuple!(string,ushort) parseAddr( string addr )
 {
     auto res = std.algorithm.findSplit( addr, ":" );
     ushort port = (res.length == 3) ? to!ushort( res[ 2 ] ) : 8080; //default to 8080
-
     return tuple( res[ 0 ], port );
 }
 
 // ------------------------------------------------------------------------- //
 
-string capHeader( char[] hdr )
+string capHeaderInPlace( char[] hdr )
 {
     bool up = true; //uppercase first letter
     foreach( i, char c; hdr )
@@ -540,6 +673,28 @@ string capHeader( char[] hdr )
             up = true;
     }
     return hdr.idup;
+}
+
+// ------------------------------------------------------------------------- //
+
+/**
+ * Parse a header of the form:
+ *  
+ *  key1=val1, key2=val2, key3=val3
+ *
+ * and return an associative array of the pairs
+ */
+
+string[string] parseHeader( string c )
+{
+    string[string] result;
+    foreach( ref val; std.algorithm.splitter( c, "," ) )
+    {
+        auto r1 = std.algorithm.findSplit( val, "=" );
+        if( r1.length == 3 )
+            result[ r1[ 0 ] ] = r1[ 2 ];
+    }
+    return result;
 }
 
 // ------------------------------------------------------------------------- //
@@ -614,7 +769,11 @@ debug void dump( shared( Response ) r, string title = "" )
 
 debug void dumpHex( char[] buf, string title = "", int cols = 16 )
 {
+    if( buf.length <= 0 )
+        return;
+
     assert( cols < 256 );
+    assert( buf.length > 0 );
 
     if( title.length > 0 )
         writeln( title );

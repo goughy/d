@@ -33,8 +33,16 @@ solution "http4d"
 --        buildoptions "-v"
         includedirs { LuaD }
         files { "examples/luasp/lsp.d", "src/protocol/*.d", "src/luasp/*.d" }
-        libdirs { LuaD .. "/lib" }
-        links { "luad", "lua", "zmq", "dl" }
+        --linkoptions { LuaD .. "/lib/libluad.a" }
+        links { "lua", "zmq", "dl", LuaD .. "/lib/libluad.a" }
+
+    project "test"
+        kind "ConsoleApp"
+        language "D"
+        files { "examples/autoroute.d" }
+        files { "src/protocol/*.d" }
+        links { "zmq" }
+
 --[[
     project "ex1"
         kind "ConsoleApp"

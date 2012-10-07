@@ -221,7 +221,7 @@ HttpRequest parseMongrelRequest( char[] data )
     assert( headerJSON.type == JSON_TYPE.OBJECT );
     foreach( string k, JSONValue v; headerJSON.object )
     {
-        string key = capHeader( k.dup );
+        string key = capHeaderInPlace( k.dup );
 
         assert( v.type == JSON_TYPE.STRING );
         req.headers[ key ] = v.str;
@@ -332,7 +332,7 @@ class TidProcessor : protocol.http.TidProcessor
 
     override bool onIdle()  //return true if we processed something
     {
-        receiveTimeout( dur!"usecs"( TIMEOUT_USEC ),
+        receiveTimeout( dur!"usecs"( 0 ),
             ( int i )
             {
                 running = ( i != 1 );
@@ -371,7 +371,7 @@ class DelegateProcessor : protocol.http.DelegateProcessor
             ZMQMsg msg = toMongrelResponse( resp );
             if( msg !is null )
             {
-                onLog( "Sending response length " ~ to!string( msg.length ) );
+//                onLog( "Sending response length " ~ to!string( msg.length ) );
                 zmqConn.send( msg );
             }
         }
