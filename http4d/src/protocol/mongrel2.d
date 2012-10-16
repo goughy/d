@@ -159,8 +159,8 @@ void mongrel2ServeImpl( ZMQConnection zmqReceive, HttpProcessor proc )
 
 void mongrel2Serve( string addrPull, string addrPub, RequestDelegate dg )
 {
-    auto resPull = parseAddr( addrPull );
-    auto resPub  = parseAddr( addrPub );
+    auto resPull = parseAddr( addrPull, SERVER_PORT );
+    auto resPub  = parseAddr( addrPub, SERVER_PORT );
 
     string pull = format( "tcp://%s:%d", resPull[ 0 ], resPull[ 1 ] );
     string pub  = format( "tcp://%s:%d", resPub[ 0 ], resPub[ 1 ] );
@@ -178,8 +178,8 @@ void mongrel2Serve( string addrPull, string addrPub, RequestDelegate dg )
 
 void mongrel2Serve( string addrPull, string addrPub, Tid tid )
 {
-    auto resPull = parseAddr( addrPull );
-    auto resPub  = parseAddr( addrPub );
+    auto resPull = parseAddr( addrPull, SERVER_PORT );
+    auto resPub  = parseAddr( addrPub, SERVER_PORT );
 
     string pull = format( "tcp://%s:%d", resPull[ 0 ], resPull[ 1 ] );
     string pub  = format( "tcp://%s:%d", resPub[ 0 ], resPub[ 1 ] );
@@ -272,7 +272,7 @@ ZMQMsg toMongrelResponse( HttpResponse resp )
     buf.put( ' ' );
 
     //now add the HTTP payload
-    auto x = toHttpResponse( resp );
+    auto x = toBuffer( resp );
     buf.put( x[ 0 ] );
     //TODO: ignoring x[ 1 ] (ie. needsClose, for now)
 

@@ -88,10 +88,10 @@ int main( string[] args )
     action.sa_handler = &sigint_handler;
     sigaction( SIGINT, &action, null );
 
-    HttpResponse delegate(HttpRequest) dg = (HttpRequest req) => handleRequest( req ,"sync" );
-
     if( sync )
     {
+        HttpResponse delegate(HttpRequest) dg = (HttpRequest req) => handleRequest( req ,"sync" );
+
         if( zmq )       mongrel2Serve( "127.0.0.1:8888", "127.0.0.1:8887", dg );
         else if( ajp )  ajpServe( addr, dg );
         else            httpServe( addr, dg );
@@ -181,6 +181,10 @@ HttpResponse handleRequest( HttpRequest req, string type )
                 "   <h1>OK</h1>\n"
                 "   <h3>" ~ type ~ " " ~ to !string( idx++ ) ~ "</h3>\n"
                 "</body></html>\n".dup;
+
+            foreach( k,v; httpStats )
+                d ~= "<br>" ~ k ~ " = " ~ to!string( v );
+
             resp.data = cast(shared ubyte[]) d;
         }
     }

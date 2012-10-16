@@ -32,9 +32,9 @@ class Http4dCallback : LspCallback
         response.data ~= content;
     }
 
-    void log( in string msg )
+    void log( lazy string msg )
     {
-        writefln( "LOG: %s", msg );
+//        writefln( "LOG: %s", msg );
     }
 
     void error( in string msg )
@@ -74,16 +74,12 @@ private:
 
 // ------------------------------------------------------------------------- //
 
-LspState tlsState;
-
-// ------------------------------------------------------------------------- //
-
 class LspRouter : Router
 {
-    this( string d )
+    this( string d, bool cache = false )
     {
         dir = d;
-        lsp = new LspState( new Http4dCallback );
+        lsp = new LspState( new Http4dCallback, cache );
     }
 
     override HttpResponse dispatch( HttpRequest req )
@@ -93,8 +89,8 @@ class LspRouter : Router
 
     override void dumpRoutes()
     {
-        writefln( "LspRouter::dumpRoutes()" );
-        writefln( "\tProcessing LSP files from %s", dir );
+        writefln( "LspRouter::dumpRoutes() [caching %s]", lsp.cache ? "enabled" : "disabled" );
+        writefln( "\t%s (directory)", dir );
     }
 
 private:
@@ -107,9 +103,7 @@ private:
 
 void luaspServe( string dir, string addr = "0.0.0.0:8080" )
 {
-    auto lsp = new LspState( new Http4dCallback );
-    lsp.cache = false;
-
+    auto lsp = new LspState( new Http4dCallback, true );
     httpServe( addr, ( req ) => handleRequest( lsp, dir, req ) );
 }
 
@@ -128,7 +122,6 @@ private HttpResponse handleRequest( LspState lsp, string dir, HttpRequest req )
         lsp.env.set( "args", "" );
 
     string sessionId = "";
-
     if( "Cookie" in req.headers )
         sessionId = findCookie( req.headers[ "Cookie" ], COOKIE_NAME );
 
@@ -136,8 +129,9 @@ private HttpResponse handleRequest( LspState lsp, string dir, HttpRequest req )
     {
         sessionId = lsp.lsp_uuid_gen();
         auto expires = Clock.currTime();
-        expires.roll!"days"( 1 );
-        callback.setHeader( "Set-Cookie", std.string.format( "%s=%s; expires=%s", COOKIE_NAME, sessionId, formatExpires( expires ) ) );
+        expires.roll!"hours"( 1 );
+        callback.setHeader( "Set-Cookie",
+                std.string.format( "%s=%s; expires=%s", COOKIE_NAME, sessionId, formatExpires( expires ) ) );
     }
 
     lsp.env.set( "session", sessionId );
@@ -148,10 +142,12 @@ private HttpResponse handleRequest( LspState lsp, string dir, HttpRequest req )
     lsp.env.set( "method", to!string( req.method ) );
     lsp.env.set( "uri", req.uri );
 
-    callback.log( "locating URI " ~ req.uri );
     string file = locateLsp( dir, req.uri );
     if( file.length == 0 ) //not found
+    {
+        callback.log( "Failed to locate " ~ req.uri );
         return status( req.getResponse(), 404 );
+    }
 
     callback.log( "Executing LSP " ~ file );
     lsp.doLsp( file );
@@ -167,13 +163,13 @@ string locateLsp( string dir, string path )
 
     if( std.file.exists( f ) && std.file.isFile( f ) ) return f;
 
-    f = f ~ ".lsp";
+    string g = f ~ ".lsp";
 
-    if( std.file.exists( f ) && std.file.isFile( f ) ) return f;
+    if( std.file.exists( g ) && std.file.isFile( g ) ) return g;
 
-    f = f ~ ".lua";
+    g = f ~ ".lua";
 
-    if( std.file.exists( f ) && std.file.isFile( f ) ) return f;
+    if( std.file.exists( g ) && std.file.isFile( g ) ) return g;
 
     return "";
 }
@@ -186,11 +182,9 @@ string findCookie( string cookie, string name )
         return "";
 
     auto r = std.algorithm.splitter( cookie, ';' );
-
     while( !r.empty )
     {
         auto r1 = std.algorithm.splitter( r.front, '=' );
-
         if( !r1.empty && std.string.strip( r1.front ) == name )
         {
             r1.popFront;

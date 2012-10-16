@@ -1,5 +1,5 @@
 
-import std.stdio;
+import std.stdio, std.conv;
 import protocol.http;
 
 class Account
@@ -26,6 +26,20 @@ public:
         debug dump( req );
         return req.getResponse().ok().content( "<html><head></head><body><h1>GET test</h1><br />" ~ req.uri ~ "</body></html>" );
     }
+
+    HttpResponse getStats( HttpRequest req )
+    {
+        char[] d;
+        foreach( k,v; httpStats )
+            d ~= "<br>" ~ k ~ " = " ~ to!string( v );
+
+        d ~= "<p>";
+        foreach( k,v; httpConns )
+            d ~= "<br>" ~ to!string( k ) ~ " = " ~ v.id;
+
+        return req.getResponse().ok().content( "<html><head></head><body><h1>GET stats</h1><br />" ~ req.uri ~ "<p>" ~ d ~ "</body></html>" );
+    }
+
 }
 
 class NoRoutes
@@ -48,11 +62,11 @@ class NoRoutes
 
 int main( string[] args )
 {
-    auto oops = new AutoRouter!NoRoutes;
-    oops.dumpRoutes();
-
+//    auto oops = new AutoRouter!NoRoutes;
+//    oops.dumpRoutes();
+//
     auto router = new AutoRouter!Account( "/v1" );
-    router.dumpRoutes();
+//    router.dumpRoutes();
     httpServe( "0.0.0.0:8000", (req) => router( req ) );
     return 0;
 }

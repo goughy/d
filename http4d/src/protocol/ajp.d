@@ -687,7 +687,7 @@ private void ajpServeImpl( string address, ushort port, HttpProcessor proc )
 
 void ajpServe( string bindAddr, Tid tid )
 {
-    auto res = parseAddr( bindAddr );
+    auto res = parseAddr( bindAddr, SERVER_PORT );
     ajpServeImpl( res[ 0 ], res[ 1 ], new TidProcessor( tid, "[AJP-D] " ) );
 }
 
@@ -695,7 +695,7 @@ void ajpServe( string bindAddr, Tid tid )
 
 void ajpServe( string bindAddr, RequestDelegate dg )
 {
-    auto res = parseAddr( bindAddr );
+    auto res = parseAddr( bindAddr, SERVER_PORT );
     ajpServeImpl( res[ 0 ], res[ 1 ], new DelegateProcessor( dg, "[AJP-D] " ) );
 }
 

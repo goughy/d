@@ -11,7 +11,7 @@ import std.file, std.datetime, std.stream, std.stdio, std.conv;
 interface LspCallback
 {
     void writer( in string content );
-    void log( in string msg );
+    void log( lazy string msg );
     string getHeader( in string name );
     void setHeader( in string name, in string value );
     void error( in string msg );
@@ -32,19 +32,24 @@ void luaPanic( LuaState L , const(char[]) msg )
 
 class LspState
 {
-    this( LspCallback cb )
+    this( LspCallback cb, bool cache = false )
     {
         L   = new LuaState;
 //        L.setPanicHandler( &luaPanic );
         L.openLibs();
 
         cb_ = cb;
-        cache_ = false;
+        cache_ = cache;
     }
 
     ~this()
     {
         env_.release();
+    }
+
+    void process( string filename )
+    {
+        doLsp( filename );
     }
 
     void doLsp( string filename )

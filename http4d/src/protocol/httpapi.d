@@ -157,6 +157,107 @@ static this()
 
 // ------------------------------------------------------------------------- //
 
+struct Uri
+{
+    string scheme;
+    string userName; //TODO
+    string password; //TODO
+    string host;
+    ushort port;
+    string path;
+
+    this( string uri )
+    {
+        port = 80u;
+
+        int state = 0;
+        string scratch;
+
+        foreach( i, c; uri )
+        {
+            switch( state )
+            {
+                case 0: // scheme
+                    if( c == ':' )
+                        state = 1;
+                    else
+                        scheme ~= c;
+                    break;
+
+                case 1: //process '://'
+                    if( c != ':' && c != '/' )
+                    {
+                        state = 2;
+                        host ~= c;
+                    }
+                    break;
+
+                case 2: //process host
+                    if( c == ':' )
+                        state = 3;
+                    else if( c == '/' )
+                    {
+                        state = 4;
+                        path ~= c;
+                    }
+                    else
+                        host ~= c;
+                    break;
+
+                case 3: //process port
+                    if( !isDigit( c ) )
+                    {
+                        if( c == '/' )
+                            path ~= c;
+
+                        state = 4;
+                    }
+                    else
+                        scratch ~= c;
+                    break;
+                
+                case 4: //process path
+                    if( scratch.length )
+                        port = to!ushort( scratch );
+
+                    path ~= c;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    debug void dump()
+    {
+        writeln( "\tscheme  : " ~ scheme );
+        writeln( "\tuserName: " ~ userName );
+        writeln( "\tpassword: " ~ password );
+        writeln( "\thost    : " ~ host );
+        writeln( "\tport    : " ~ to!string( port ) );
+        writeln( "\tpath    : " ~ path );
+    }
+}
+
+unittest 
+{
+    Uri u = Uri( "" );
+    assert( u.scheme.length == 0 );
+
+    u = Uri( "http://example.com" );
+    u.dump();
+    assert( u.scheme.length == 4 );
+    assert( u.host == "example.com" );
+    assert( u.port == 80u );
+
+    u = Uri( "http://example.com:8080/abc" );
+    u.dump();
+    assert( u.scheme.length == 4 );
+    assert( u.host == "example.com" );
+    assert( u.port == 8080u );
+    assert( u.path == "/abc" );
+}
 /**
  * The $(D Request) class encapsulates all captured data from the inbound client
  * request.  It is the core class the library provides to model an HTTP request
@@ -182,9 +283,8 @@ public:
     string          uri;
     string[string]  headers;
     string[string]  attrs;
-    bool            dataIsPath; // if TRUE, 'data' is the path to a file containing
-                                // the request payload (ie. it was big!)
     ubyte[]         data;
+    string          path;
 
     string getHeader( string k )
     {
@@ -409,7 +509,7 @@ public:
         writefln( "MethodRouter::dumpRoutes()" );
         foreach( handler; handlerMap )
         {
-            writefln( "\t%s -> %s", to!string( handler.m ), to!string( handler.f ) );
+            writefln( "\t%s (method)", to!string( handler.m ) );
         }
     }
 
@@ -492,7 +592,7 @@ public:
         writefln( "UriRouter::dumpRoutes()" );
         foreach( handler; handlerMap )
         {
-            writefln( "\t%s -> %s", handler.u, to!string( handler.f ) );
+            writefln( "\t%s (regex)", handler.u );
         }
     }
 
@@ -544,7 +644,6 @@ public:
 
 private:
 
-
     void init( string base )
     {
         //CTFE
@@ -566,7 +665,7 @@ private:
 
                         auto r = std.algorithm.findSplit( mbr.toLower, to!string( meth ).toLower );
                         if( !r[1].empty )
-                            s = s ~ "makeMount( Method." ~ meth ~ ", \"" ~ r[ 2 ] ~ "\", &instance." ~ mbr ~ ");";
+                            s = s ~ "makeMount( \"" ~ mbr ~ "\", Method." ~ meth ~ ", \"" ~ r[ 2 ] ~ "\", &instance." ~ mbr ~ ");";
                     }
                 }
                 else
@@ -576,7 +675,7 @@ private:
         }
 
         //runtime
-        void makeMount( Method method, string mountPoint, HttpResponse delegate(HttpRequest) handler )
+        void makeMount( string funcName, Method method, string mountPoint, HttpResponse delegate(HttpRequest) handler )
         {
             UriRouter uriRouter;
             if( method in uriRouters )
@@ -589,7 +688,7 @@ private:
             if( base[ $ - 1 ] == '/' )
                 base = base[ 0 .. $ - 1 ];
 
-            writeln( "Mounting method " ~ to!string( method ) ~ " to URI " ~ base ~ "/" ~ mountPoint );
+            writeln( "Mapping " ~ T.stringof ~ "." ~ funcName ~"() -> [" ~ to!string( method ) ~ ", " ~ base ~ "/" ~ mountPoint ~ "]" );
             uriRouter.mount( "^" ~ base ~ "/" ~ mountPoint ~ "$", handler );
             methodRouter.mount( method, uriRouter );
         }
@@ -650,10 +749,10 @@ Method toMethod( string m )
  * Parse an address of the form "x.x.x.x:yyyy" into a string address and 
  * corresponding ushort port
  */
-Tuple!(string,ushort) parseAddr( string addr )
+Tuple!(string,ushort) parseAddr( string addr, ushort def )
 {
     auto res = std.algorithm.findSplit( addr, ":" );
-    ushort port = (res.length == 3) ? to!ushort( res[ 2 ] ) : 8080; //default to 8080
+    ushort port = (res.length == 3) ? to!ushort( res[ 2 ] ) : def; //default
     return tuple( res[ 0 ], port );
 }
 
@@ -756,7 +855,7 @@ debug void dump( shared( Response ) r, string title = "" )
         writeln( title );
 
     writeln( "Connection: ", r.connection.idup );
-    writeln( "Status    : ", r.statusCode, " ", r.statusMesg.idup );
+    writeln( "Status    : ", r.statusCode, " - ", r.statusMesg.idup );
 
     foreach( k, v; r.headers )
     writeln( "\t", k.idup, ": ", v.idup );

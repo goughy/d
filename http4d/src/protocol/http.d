@@ -26,7 +26,7 @@ public import protocol.httpapi;
 enum MAX_REQUEST_LEN = 1024 * 1024 * 20; // 20MB
 enum DIVERT_REQUEST_LEN = 1024 * 30; // 50kB
 
-enum TIMEOUT_USEC   = 500;
+enum TIMEOUT_USEC   = 1000;
 enum CHUNK_SIZE     = 8096; //try to get at least Content-Length header in first chunk
 bool running        = false;
 
@@ -36,7 +36,8 @@ enum NEWLINE        = "\r\n";
 enum HTTP_10        = "HTTP/1.0";
 enum HTTP_11        = "HTTP/1.1";
 enum SERVER_ADMIN   = "root";
-enum SERVER_HOST    = "localhost";
+enum SERVER_HOST    = "localhost.localdomain";
+enum SERVER_PORT    = 8080;
 /**
  * Delegate signature required to be implemented by any handler
  */
@@ -100,7 +101,7 @@ private:
 
 void httpServe( string bindAddr, RequestDelegate dg )
 {
-    auto res = parseAddr( bindAddr );
+    auto res = parseAddr( bindAddr, SERVER_PORT );
     HttpProcessor proc = new DelegateProcessor( dg, "[HTTP-D] " );
     proc.onLog( "Executing in SYNC mode" );
     httpServeImpl( res[ 0 ], res[ 1 ], proc );
@@ -154,10 +155,83 @@ void httpServe( string bindAddr, RequestDelegate dg )
 
 void httpServe( string bindAddr, Tid tid )
 {
-    auto res = parseAddr( bindAddr );
+    auto res = parseAddr( bindAddr, SERVER_PORT );
     HttpProcessor proc = new TidProcessor( tid, "[HTTP-D] " );
     proc.onLog( "Executing in ASYNC mode" );
     httpServeImpl( res[ 0 ], res[ 1 ], proc );
+}
+
+// ------------------------------------------------------------------------- //
+
+HttpResponse httpClient( string url )
+{
+   Uri u = Uri( url );
+   if( u.scheme != "http" )
+       throw new Exception( "Unsupported URI scheme: " ~ u.scheme );
+
+   HttpRequest req = new HttpRequest;
+   req.method   = Method.GET;
+   req.protocol = HTTP_10; //auto-close
+   req.uri      = u.path;
+
+   req.headers[ "Host" ] = (u.host ~ ":" ~ to!string( u.port )).idup;
+   return httpClient( req );
+}
+
+// ------------------------------------------------------------------------- //
+
+int responseId = 0;
+
+HttpResponse httpClient( HttpRequest req )
+{
+    assert( req !is null );
+    assert( "Host" in req.headers );
+
+    auto addrRes = parseAddr( req.getHeader( "Host" ), 80 );
+    debug req.dump( "HTTPCLIENT request" );
+
+    InternetAddress addr = new InternetAddress( addrRes[ 0 ], addrRes[ 1 ] );
+    Socket sock = new Socket( AddressFamily.INET, SocketType.STREAM );
+    sock.blocking( true );
+    sock.setOption( SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1 );
+    sock.connect( addr );
+
+//    debug writeln( format( "phase 0: %s %s %s\r\n", to!string( req.method ), req.uri.dup, req.protocol.dup ) );
+    sock.send( toBuffer( req ) );
+
+    ubyte[] buf;
+    buf.length = CHUNK_SIZE;
+    long num = sock.receive( buf ); //may propogate read exception
+    if( num > 0 )
+    {
+        buf.length = num;
+        auto res = parseHttpHeaders( buf );
+        auto currReq = res[ 0 ];
+        auto rem     = res[ 1 ];
+        while( rem > currReq.data.length )
+        {
+            buf.length = rem;
+            num = sock.receive( buf );
+            if( num > 0 )
+                rem = parseHttpData( currReq, buf );
+            else
+                throw new Exception( "EOF exception when attempting to receive next " ~ to!string( rem ) ~ " bytes" );
+        }
+        
+        sock.close();
+
+        currReq.connection = addr.toString();
+
+        HttpResponse resp = currReq.getResponse();
+        resp.statusCode   = to!int( currReq.uri );
+        resp.statusMesg   = currReq.protocol;
+        resp.headers = currReq.headers;
+        resp.data    = currReq.data;
+
+        debug resp.dump( "RESPONSE " ~ addrRes[ 0 ] ~ ": " ~ to!string( responseId++ ) );
+        return resp;
+    }
+    return null;
 }
 
 // ------------------------------------------------------------------------- //
@@ -173,6 +247,34 @@ interface HttpProcessor
 
 // ------------------------------------------------------------------------- //
 
+ulong[string] httpStats;
+
+void addStat( string s, ulong num )
+{
+    if( auto p = s in httpStats )
+        (*p) += num;
+    else
+        httpStats[ s ] = num;
+}
+
+void incStat( string s )
+{
+    addStat( s, 1 );
+}
+
+void setStat( string s, ulong num )
+{
+    httpStats[ s ] = num;
+}
+
+void showStats()
+{
+    foreach( k,v; httpStats )
+        writefln( "\t%s = %u", k, v );
+}
+
+// ------------------------------------------------------------------------- //
+
 HttpConnection[int] httpConns;
 
 class HttpConnection
@@ -184,6 +286,7 @@ public:
         sock = s;
         ident = sock.remoteAddress().toString();
         currReq = null;
+        state = State.Headers;
     }
 
     ~this()
@@ -205,69 +308,94 @@ public:
 
     HttpRequest read()
     {
+        if( state == State.Closing )
+            return null;
+
         ubyte[] buf;
         buf.length = CHUNK_SIZE;
         long num = sock.receive( buf ); //may propogate read exception
+        if( num <= 0 )
+            throw new SocketException( (num < 0 ? "Error" : "EOF") ~ " on " ~ to!string( id ) ~ " (" ~ to!string( num ) ~ " bytes read)" );
+
         auto rem = 0UL;
-        if( num > 0 )
+        buf.length = num;
+        addStat( "total_bytes_read", num );
+        if( state == State.Headers )
         {
-            buf.length = num;
-            debug dumpHex( cast( char[] ) buf, "(D) read data (num = " ~to!string( num ) ~ ")" );
-            if( currReq is null )
+            int pos = -1;
+            if( readBuf.length == 0 )
             {
-                readBuf ~= buf;
-                auto res = parseHttpHeaders( readBuf );
-                currReq = res[ 0 ];
-                rem     = res[ 1 ];
+                pos = findEndOfHeaders( buf );
+                if( pos <= 0 )
+                {
+                    //if we didn't find the end of the headers from this read, store the data and read again
+                    readBuf ~= buf;
+                }
             }
             else
             {
-                rem = parseHttpData( currReq, buf );
-                debug writefln( "(D) parseHttpData returned %d bytes remaining", rem );
+                // this is any read > 1 to attempt to find the end of the headers
+                readBuf ~= buf[ 0 .. num ];
+                pos = findEndOfHeaders( readBuf );
+            }
+
+            if( pos >= 0 )
+            {
+                state = State.Body;
+
+                auto res = parseHttpHeaders( buf );
+                currReq = res[ 0 ];
+                rem     = res[ 1 ];
             }
         }
-        else if( num == 0 )
-            throw new SocketException( "EOF on " ~ to!string( id ) ~ " (" ~ to!string( num ) ~ " bytes read)" );
-        else
-            throw new SocketException( "Error on " ~ to!string( id ) ~ " (returned " ~ to!string( num ) ~ ")" );
-
-        if( rem <= 0UL ) //no more data necessary
+        else if( state == State.Body )
         {
-            readBuf.length = 0;
+            rem = parseHttpData( currReq, buf );
+        }
+
+        if( rem <= 0UL && currReq !is null ) //no more data necessary
+        {
+            incStat( "total_requests" );
+            incStat( "total_requests_" ~ to!string( currReq.method ).toLower );
+
             currReq.connection = to!string( id );
             currReq.attrs[ "Remote-Host" ]  = currReq.connection;
-            currReq.attrs[ "Server-Admin" ] = SERVER_ADMIN;
+            currReq.attrs[ "Server-Admin" ]  = SERVER_ADMIN;
             currReq.attrs[ "Server-Host" ]  = SERVER_HOST;
+
             HttpRequest tmp = currReq;
             currReq = null;
+            readBuf.length = 0;
+            state = State.Headers;
+
             return tmp; //return null if we have more data to read...
         }
+
         return null;
     }
 
     ulong write()
     {
         ulong num = sock.send( writeBuf );
-
+        addStat( "total_bytes_written", num );
         if( num == writeBuf.length )
             writeBuf.length = 0;
         else
             writeBuf = writeBuf[ num .. $ ];
 
-//        debug writefln( "(D) Wrote %d bytes (%d left) to connection %s", num, writeBuf.length, id );
         return num;
     }
 
     void add( shared( Response ) r )
     {
-        auto x = toHttpResponse( r );
+        incStat( "total_responses" );
+        auto x = toBuffer( r, isChunked( r ) );
         writeBuf ~= x[ 0 ];
-        isClosing = x[ 1 ];
-//        debug writefln( "(D) Added response to connection %s, writeBuf length %d", id, writeBuf.length );
+        state = x[ 1 ] ? State.Closing : State.Headers;
     }
 
     @property bool needsWrite() { return writeBuf.length > 0UL; }
-    @property bool needsClose() { return isClosing; }
+    @property bool needsClose() { return state == State.Closing; }
 
 private:
 
@@ -275,7 +403,8 @@ private:
     ubyte[] readBuf;
     ubyte[] writeBuf;
     Socket  sock;
-    bool    isClosing;
+    enum State { Headers, Body, Closing };
+    State    state;
     HttpRequest currReq;
 }
 
@@ -330,13 +459,6 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
     bool isListener( zmq_pollitem_t item ) { return item.fd == listenSock.handle; }
 
     //++ += == = ++/
-    bool onError( HttpConnection * pConn )
-    {
-        debug proc.onLog( "Error on connection " ~ to!string( pConn.id ) ~ " - closing" );
-        return false;
-    }
-
-    //++ += == = ++/
     HttpConnection onAccept()
     {
         try
@@ -345,14 +467,13 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
             client.blocking( false );
             client.setOption( SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1 );
 
-            debug writefln( "(D) onAccept() new client fd %d - %s", cast( int ) client.handle(), client.remoteAddress().toString() );
             HttpConnection conn = new HttpConnection( client );
             httpConns[ client.handle() ] = conn;
+            incStat( "num_accepted" );
             return conn;
         }
         catch( SocketAcceptException sae )
         {
-//            debug writefln( "(D) onAccept(): %s", sae.toString() );
         }
 
         return null;
@@ -361,7 +482,6 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
     //++ += == = ++/
     bool onRead( HttpConnection * pConn )
     {
-//        debug writefln( "(D) Reading from connection %s", pConn.id );
         HttpRequest req = pConn.read();
         if( req !is null )
             proc.onRequest( req );
@@ -420,7 +540,6 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
                         else if( ( pitem[ i ].revents & ZMQ_POLLIN ) != 0 )
                         {
                             tmp = onAccept();
-
                             if( tmp !is null )
                                 pConn = &tmp;
                         }
@@ -430,8 +549,8 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
                     else //handle normal sockets
                     {
                         //error checking
-                        if( ( pitem[ i ].revents & ZMQ_POLLERR ) != 0 )
-                            keep = false; // onError( pConn );
+                        if( ( pitem[ i ].revents & ZMQ_POLLERR ) != 0 || pConn.needsClose )
+                            keep = false;
                         else
                         {
                             //read checking
@@ -447,7 +566,7 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
                 catch( HttpException he )
                 {
                     //an HttpException is thrown internally to indicate some HTTP protocol
-                    //constraint has been brokem - so we set the response status, and close the connection
+                    //constraint has been broken - so we set the response status, and close the connection
                     if( pConn !is null )
                         pConn.add( he.getResponse() );
                 }
@@ -456,6 +575,8 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
                     debug proc.onLog( "Exception occurred on fd " ~ to!string( pitem[ i ].fd ) ~
                                       ":" ~ e.toString() );
                     keep = false;
+                    incStat( "num_errors" );
+                    debug showStats();
                 }
 
                 //merge runlist
@@ -469,10 +590,12 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
             }
 
             pitem = ptmp; //swap poll lists
+            setStat( "num_connections", pitem.length - 1 ); // -1 as that's the listen socket
         }
 
         //do idle processing
         receivedData = proc.onIdle();
+        setStat( "received_data_flag", receivedData ? 1 : 0 );
     }
 
     proc.onExit();
@@ -517,7 +640,7 @@ public:
         bool found = false;
 
         receiveTimeout( dur!"usecs"( 0 ),
-                        ( int i )
+        ( int i )
         {
             running = ( i != 1 );
         },
@@ -574,6 +697,7 @@ public:
     {
         HttpResponse resp = dg( req );
 
+        hadData = false;
         if( resp !is null )
         {
             foreach( conn; httpConns )
@@ -616,23 +740,33 @@ zmq_pollitem_t * toZmqItem( HttpConnection c )
 
 // ------------------------------------------------------------------------- //
 
+int findEndOfHeaders( ubyte[] buf )
+{
+    auto res = findSplit( buf, NEWLINE ~ NEWLINE );
+    if( !res[ 1 ].empty ) //found
+        return cast(int) res[ 0 ].length + 4;
+
+    return -1;
+}
+
+// ------------------------------------------------------------------------- //
+
 Tuple!( HttpRequest, ulong ) parseHttpHeaders( ubyte[] buf )
 {
-    HttpRequest req = new HttpRequest();
+    HttpRequest req = new HttpRequest;
     ulong reqLen = 0UL;
 
     auto res = findSplit( buf, NEWLINE );
     //first line should be OP URL PROTO
     auto line  = splitter( res[ 0 ], ' ' );
 
-    req.method = toMethod( (cast( char[]) line.front ).idup );
+    req.method = toMethod( (cast(char[]) line.front ).idup );
     line.popFront;
     req.uri    = ( cast(char[]) line.front ).idup;
     line.popFront;
-    req.protocol = ( cast(char[]) line.front ).idup;
+    req.protocol = (cast(char[]) joiner( line, cast(ubyte[])[' '] ).array()).idup;
 
     auto tmp = std.algorithm.splitter( cast(string) req.uri, "?" );
-
     if( !tmp.empty )
     {
         req.uri = tmp.front;
@@ -642,20 +776,16 @@ Tuple!( HttpRequest, ulong ) parseHttpHeaders( ubyte[] buf )
             req.attrs[ "Query-String" ] = tmp.front;
     }
 
-//    writefln( "Length of remaining buffer is %d", res[ 2 ].length );
     bool foundEndHeader = false;
     for( res = findSplit( res[ 2 ], NEWLINE ); res[ 0 ].length > 0; )
     {
         auto hdr = findSplit( res[ 0 ], ": " );
-
-//        debug writefln( "Header split = %s: %s", to!string( hdr[ 0 ] ), to!string( hdr[ 2 ] ) );
         if( hdr.length > 0 )
         {
             string key = capHeaderInPlace( ( cast( char[] ) hdr[ 0 ] ) ).idup;
             string val = ( cast( char[] ) hdr[ 2 ] ).idup;
 
             req.headers[ key ] = val;
-
             if( key == "Content-Length" )
                 reqLen = to!ulong( val );
         }
@@ -666,20 +796,24 @@ Tuple!( HttpRequest, ulong ) parseHttpHeaders( ubyte[] buf )
 
     if( !foundEndHeader )
     {
-        debug writefln( "Failed to locate end of headers!" );
+        debug dumpHex( cast(char[]) buf, "Failed to locate end-of-headers in input buffer" );
+        incStat( "num_missed_header_termination" );
         return tuple( cast(HttpRequest) null, 0UL );
     }
 
     if( reqLen > MAX_REQUEST_LEN )
+    {
+        incStat( "num_max_length_exceeded" );
         throw new Exception( format( "Maximum request length exceeded (%d > %d) - aborting", reqLen, MAX_REQUEST_LEN ) );
+    }
 
     if( reqLen > DIVERT_REQUEST_LEN )
     {
-        req.dataIsPath = true;
+        incStat( "num_divert_length_exceeded" );
         version(Posix)
         {
-            req.data = cast(shared(ubyte[])) "/tmp/httpd.XXXXXX".dup;
-            mkstemp( (cast(char[]) req.data).ptr );
+            req.path = "/tmp/httpd.XXXXXX".idup;
+            mkstemp( (cast(char[]) req.path).ptr );
         }
         else
         {
@@ -696,7 +830,7 @@ Tuple!( HttpRequest, ulong ) parseHttpHeaders( ubyte[] buf )
 }
 
 // ------------------------------------------------------------------------- //
-
+/++
 unittest
 {
     string httpHeader = "
@@ -721,18 +855,18 @@ Cookie: smplrefresh=5; speedlog2=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0; sessio
     }
     writefln( "Executed 1,000,000 headers parses in %dus", sw.peek().usecs / 1_000_000 ); 
 }
-
+++/
 // ------------------------------------------------------------------------- //
 
 ulong parseHttpData( HttpRequest req, ubyte[] buf )
 {
-    if( buf.length > 0 )
+    if( req !is null && buf.length > 0 )
     {
         ulong len = 0UL;
-        if( req.dataIsPath )
+        if( req.path !is null )
         {
-            debug writefln( "Appending %d bytes to file %s", buf.length, to!string(cast(char[]) req.data ) );
-            auto f = File( to!string( cast(char[]) req.data ), "a" );
+//            debug writefln( "Appending %d bytes to file %s", buf.length, to!string(cast(char[]) req.path ) );
+            auto f = File( to!string( cast(char[]) req.path ), "a" );
             f.write( cast(char[]) buf );
             f.flush();
             len = f.tell();
@@ -751,49 +885,57 @@ ulong parseHttpData( HttpRequest req, ubyte[] buf )
 
 // ------------------------------------------------------------------------- //
 
-Tuple!( ubyte[], bool ) toHttpResponse( HttpResponse r )
+Tuple!( ubyte[], bool ) toBuffer( HttpResponse r, bool isChunked = false )
 {
     auto buf = appender!( ubyte[] )();
     buf.reserve( 512 );
 
-    buf.put( cast( ubyte[] ) HTTP_11 );
-    buf.put( ' ' );
-
-    buf.put( cast( ubyte[] ) to!string( r.statusCode ) );
-    buf.put( ' ' );
-    buf.put( cast( ubyte[] ) r.statusMesg );
-    buf.put( '\r' );
-    buf.put( '\n' );
-
-    r.addHeader( SERVER_HEADER, SERVER_DESC );
-
-    if( !( "Date" in r.headers ) )
-    {
-        long now = time( null );
-        r.addHeader( "Date", to!string( asctime( gmtime( & now ) ) )[0..$ -1] );
-    }
-
     bool needsClose = false;
 
-    if( "Connection" in r.headers )
+    if( !isChunked )
     {
-        needsClose = r.headers[ "Connection" ] == "close";
-
-        if( r.protocol.toUpper == HTTP_11 )
-            r.addHeader( "Connection", "Keep-Alive" );
-    }
-
-    if( !( "Content-Length" in r.headers ) && !isChunked( r ) )
-        r.addHeader( "Content-Length", to!string( r.data.length ) );
-
-    foreach( k, v; r.headers )
-    {
-        buf.put( cast( ubyte[] ) k );
-        buf.put( ':' );
+        buf.put( cast( ubyte[] ) HTTP_11 );
         buf.put( ' ' );
-        buf.put( cast( ubyte[] ) v );
+
+        buf.put( cast( ubyte[] ) to!string( r.statusCode ) );
+        buf.put( ' ' );
+        buf.put( cast( ubyte[] ) r.statusMesg );
         buf.put( '\r' );
         buf.put( '\n' );
+
+        r.addHeader( SERVER_HEADER, SERVER_DESC );
+
+        if( !( "Date" in r.headers ) )
+        {
+        long now = time( null );
+        r.addHeader( "Date", to!string( asctime( gmtime( & now ) ) )[0..$ -1] );
+        }
+
+        if( "Connection" in r.headers )
+        {
+            needsClose = r.headers[ "Connection" ] == "close";
+
+            if( !needsClose && r.protocol.toUpper == HTTP_11 )
+                r.addHeader( "Connection", "Keep-Alive" );
+        }
+
+        if( !( "Content-Length" in r.headers ) )
+        r.addHeader( "Content-Length", to!string( r.data.length ) );
+
+        foreach( k, v; r.headers )
+        {
+            buf.put( cast( ubyte[] ) k );
+            buf.put( ':' );
+            buf.put( ' ' );
+            buf.put( cast( ubyte[] ) v );
+            buf.put( '\r' );
+            buf.put( '\n' );
+        }
+    }
+    else
+    {
+        //we are in "chunked" Transfer-Encoding mode, so we hexiy the length
+        buf.put( cast(ubyte[]) format( "%x\r\n", r.data.length ) );
     }
 
     buf.put( '\r' );
@@ -802,8 +944,29 @@ Tuple!( ubyte[], bool ) toHttpResponse( HttpResponse r )
     if( r.data.length > 0 )
         buf.put( cast( ubyte[] ) r.data );
 
-    debug dumpHex( cast( char[] ) buf.data, "HTTP RESPONSE" );
+//    debug dumpHex( cast( char[] ) buf.data, "HTTP RESPONSE" );
     return tuple( buf.data, needsClose );
+}
+
+// ------------------------------------------------------------------------- //
+
+ubyte[] toBuffer( HttpRequest req )
+{
+//    debug writeln( format( "phase 0: %s %s %s\r\n", to!string( req.method ), req.uri.dup, req.protocol.dup ) );
+    ubyte[] buf;
+    buf.length = 1024;
+
+    buf ~= format( "%s %s %s\r\n", to!string( req.method ), req.uri.dup, req.protocol.dup );
+    buf ~= format( "Host: %s\r\n", req.getHeader( "Host" ) );
+    foreach( k,v; req.headers )
+    {
+        if( k != "Host" )
+            buf~= format( "%s: %s\r\n", k, v );
+    }
+    buf ~= format( "Connection: %s\r\n", req.protocol == HTTP_10 ? "close" : "Keep-Alive" );
+    buf ~= "\r\n";
+
+    return buf;
 }
 
 // ------------------------------------------------------------------------- //

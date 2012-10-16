@@ -4,14 +4,13 @@ LuaD = "/data/devel-ext/LuaD"
 solution "http4d"
     configurations { "debug", "release" }
     includedirs { "src", "src/deimos" } 
-    buildoptions "-Dddoc"
---    location "build"
 
     configuration "debug"
         flags { "Symbols", "ExtraWarnings" }
 
     configuration { "debug", "D" }
         buildoptions "-gc"
+        buildoptions "-Dddoc"
 
     configuration "release"
         flags { "Optimize" }
@@ -26,6 +25,12 @@ solution "http4d"
         files { "main.d", "src/protocol/*.d" }
         links { "zmq" }
 
+    project "lua"
+        kind "StaticLib"
+        language "C"
+        files { "src/luasp/lua-5.1/src/*.c" }
+        excludes { "src/luasp/lua-5.1/src/lua.c", "src/luasp/lua-5.1/src/luac.c", "src/luasp/lua-5.1/src/print.c" }
+        buildoptions "-fno-omit-frame-pointer"
 
     project "lsp"
         kind "ConsoleApp"
@@ -33,12 +38,30 @@ solution "http4d"
 --        buildoptions "-v"
         includedirs { LuaD }
         files { "examples/luasp/lsp.d", "src/protocol/*.d", "src/luasp/*.d" }
-        --linkoptions { LuaD .. "/lib/libluad.a" }
-        links { "lua", "zmq", "dl", LuaD .. "/lib/libluad.a" }
+        files { LuaD .. "/luad/*.d", LuaD .. "/luad/conversions/*.d", LuaD .. "/luad/c/*.d" }
+        links { "lua", "zmq" }
+
+    project "lsp_standalone"
+        kind "ConsoleApp"
+        language "D"
+        includedirs { LuaD }
+        files { "examples/luasp/lsp_standalone.d", "src/luasp/process.d" }
+        files { LuaD .. "/luad/*.d", LuaD .. "/luad/conversions/*.d", LuaD .. "/luad/c/*.d" }
+        links { "lua" }
 
     project "test"
         kind "ConsoleApp"
         language "D"
+--        buildoptions { "-unittest" }
+--        files { "examples/autoroute.d" }
+        files { "client.d" }
+        files { "src/protocol/*.d" }
+        links { "zmq" }
+
+    project "autoroute"
+        kind "ConsoleApp"
+        language "D"
+--        buildoptions { "-unittest" }
         files { "examples/autoroute.d" }
         files { "src/protocol/*.d" }
         links { "zmq" }
