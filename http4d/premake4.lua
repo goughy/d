@@ -49,11 +49,10 @@ solution "http4d"
         files { LuaD .. "/luad/*.d", LuaD .. "/luad/conversions/*.d", LuaD .. "/luad/c/*.d" }
         links { "lua" }
 
-    project "test"
+    project "client"
         kind "ConsoleApp"
         language "D"
---        buildoptions { "-unittest" }
---        files { "examples/autoroute.d" }
+        buildoptions { "-unittest" }
         files { "client.d" }
         files { "src/protocol/*.d" }
         links { "zmq" }
