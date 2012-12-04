@@ -34,23 +34,25 @@ void usage( string name )
 
 int main( string[] args )
 {
-    string base = "http://localhost:8000";
-    if( args.length > 1 )
-        base = args[ 1 ];
-
-    int num = 1000;
-    if( args.length > 2 )
-        num = to!int( args[ 2 ] );
-
-    writeln( "Connecting to URL " ~ base );
-    for( int i = 0; i < num; ++i )
+    if( args.length < 2 )
     {
-        if( i % 2 == 0 )
-            httpClient( base ~ "/v1/test" );
-        else
-            httpClient( base ~ "/v1/account" );
+        usage( args[ 0 ] );
+        return 1;
     }
-    writeln( "Bye" );
+
+    Uri u = Uri( args[ 1 ] );
+
+    HttpRequest req = new HttpRequest;
+    req.method   = Method.GET;
+    req.protocol = HTTP_11; //auto-close
+    req.uri      = u.path;
+
+    req.headers[ "Host" ]   ~= u.host ~ ":" ~ to!string( u.port );
+    req.headers[ "Accept" ] ~= "*";
+
+    writeln( "Connecting to URL " ~ u.toString() );
+    auto resp = httpClient( req );
+    debug dump( resp );
     return 0;
 }
 
