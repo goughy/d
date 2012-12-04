@@ -40,18 +40,18 @@ class Http4dCallback : LspCallback
     void error( in string msg )
     {
         response.statusCode = 500;
-        response.headers[ "Content-Type" ] = "text/plain";
+        response.headers[ "Content-Type" ] ~= "text/plain";
         response.data = cast( shared ubyte[] ) msg.dup;
     }
 
-    string getHeader( in string name )
+    string[] getHeader( in string name )
     {
-        return request.headers[ name ];
+        return cast(string[]) request.headers[ name ];
     }
 
     void setHeader( in string name, in string value )
     {
-        response.headers[ name ] = value;
+        response.headers[ name ] ~= value;
     }
 
     void setRequest( HttpRequest req )
@@ -123,7 +123,7 @@ private HttpResponse handleRequest( LspState lsp, string dir, HttpRequest req )
 
     string sessionId = "";
     if( "Cookie" in req.headers )
-        sessionId = findCookie( req.headers[ "Cookie" ], COOKIE_NAME );
+        sessionId = findCookie( cast(string[]) req.headers[ "Cookie" ], COOKIE_NAME );
 
     if( sessionId.length == 0 )
     {
@@ -176,24 +176,26 @@ string locateLsp( string dir, string path )
 
 // ------------------------------------------------------------------------- //
 
-string findCookie( string cookie, string name )
+string findCookie( string[] cookies, string name )
 {
-    if( cookie is null || cookie.length == 0 )
+    if( cookies is null || cookies.length == 0 )
         return "";
 
-    auto r = std.algorithm.splitter( cookie, ';' );
-    while( !r.empty )
+    foreach( cookie; cookies )
     {
-        auto r1 = std.algorithm.splitter( r.front, '=' );
-        if( !r1.empty && std.string.strip( r1.front ) == name )
+        auto r = std.algorithm.splitter( cookie, ';' );
+        while( !r.empty )
         {
-            r1.popFront;
-            return r1.front;
+            auto r1 = std.algorithm.splitter( r.front, '=' );
+            if( !r1.empty && std.string.strip( r1.front ) == name )
+            {
+                r1.popFront;
+                return r1.front;
+            }
+
+            r.popFront;
         }
-
-        r.popFront;
     }
-
     return "";
 }
 

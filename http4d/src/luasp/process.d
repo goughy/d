@@ -12,7 +12,7 @@ interface LspCallback
 {
     void writer( in string content );
     void log( lazy string msg );
-    string getHeader( in string name );
+    string[] getHeader( in string name );
     void setHeader( in string name, in string value );
     void error( in string msg );
 }
@@ -230,7 +230,7 @@ private:
 
     string lsp_get_in_header( string key )
     {
-        return cb_.getHeader( key );
+        return cb_.getHeader( key )[ 0 ];
     }
 
     // ------------------------------------------------------------------------- //
