@@ -204,76 +204,79 @@ ubyte[] convertResponse( shared( Response ) r )
 
     putInt( buf, cast( int ) r.headers.length );
 
-    foreach( k, v; r.headers )
+    foreach( k, v1; r.headers )
     {
-        switch( k.toLower )
+        foreach( v; v1 )
         {
-            case "content-type":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x01 );
-                break;
+            switch( k.toLower )
+            {
+                case "content-type":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x01 );
+                    break;
 
-            case "content-language":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x02 );
-                break;
+                case "content-language":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x02 );
+                    break;
 
-            case "content-length":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x03 );
-                break;
+                case "content-length":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x03 );
+                    break;
 
-            case "date":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x04 );
-                break;
+                case "date":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x04 );
+                    break;
 
-            case "last-modified":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x05 );
-                break;
+                case "last-modified":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x05 );
+                    break;
 
-            case "location":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x06 );
-                break;
+                case "location":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x06 );
+                    break;
 
-            case "set-cookie":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x07 );
-                break;
+                case "set-cookie":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x07 );
+                    break;
 
-            case "set-cookie2":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x08 );
-                break;
+                case "set-cookie2":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x08 );
+                    break;
 
-            case "servlet-engine":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x09 );
-                break;
+                case "servlet-engine":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x09 );
+                    break;
 
-            case "status":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x0A );
-                break;
+                case "status":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x0A );
+                    break;
 
-            case "www-authenticate":
-                putByte( buf, 0xA0 );
-                putByte( buf, 0x0B );
-                break;
+                case "www-authenticate":
+                    putByte( buf, 0xA0 );
+                    putByte( buf, 0x0B );
+                    break;
 
-            default:
-                putString( buf, k );
-                break;
+                default:
+                    putString( buf, k );
+                    break;
+            }
+
+            putString( buf, v );
         }
-
-        putString( buf, v );
     }
 
     //ensure we had a "Content-Length" header
     //if not, make one
-    if( !( "content-length" in r.headers ) )
+    if( !( "Content-Length" in r.headers ) )
     {
         putByte( buf, 0xA0 );
         putByte( buf, 0x03 );
@@ -366,7 +369,7 @@ Tuple!( shared( Request ), int ) parseAjpForward( ubyte[] buf )
 
             debug writefln( "(D) header %d: %s = %s", i, key, val );
 
-            req.headers[ key ] = val;
+            req.headers[ key ] ~= val;
 
             if( idx == 0x08 )                 //ie. "Content-Length" header
             {
@@ -383,7 +386,7 @@ Tuple!( shared( Request ), int ) parseAjpForward( ubyte[] buf )
 
             debug writefln( "(D) header %d: %s = %s", i, key, val );
 
-            req.headers[ key.toLower ] = val.idup;
+            req.headers[ key.toLower ] ~= val.idup;
         }
     }
 

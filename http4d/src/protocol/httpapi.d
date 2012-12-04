@@ -210,6 +210,9 @@ struct Uri
                         if( c == '/' )
                             path ~= c;
 
+                        if( scratch.length )
+                            port = to!ushort( scratch );
+
                         state = 4;
                     }
                     else
@@ -217,9 +220,6 @@ struct Uri
                     break;
                 
                 case 4: //process path
-                    if( scratch.length )
-                        port = to!ushort( scratch );
-
                     path ~= c;
                     break;
 
@@ -237,6 +237,11 @@ struct Uri
         writeln( "\thost    : " ~ host );
         writeln( "\tport    : " ~ to!string( port ) );
         writeln( "\tpath    : " ~ path );
+    }
+
+    string toString()
+    {
+        return scheme ~ "://" ~ host ~ ":" ~ to!string( port ) ~ path;
     }
 }
 
@@ -257,6 +262,13 @@ unittest
     assert( u.host == "example.com" );
     assert( u.port == 8080u );
     assert( u.path == "/abc" );
+
+    u = Uri( "http://example.com:8080/" );
+    u.dump();
+    assert( u.scheme.length == 4 );
+    assert( u.host == "example.com" );
+    assert( u.port == 8080u );
+    assert( u.path == "/" );
 }
 /**
  * The $(D Request) class encapsulates all captured data from the inbound client
@@ -281,14 +293,14 @@ public:
     Method          method;
     string          protocol;
     string          uri;
-    string[string]  headers;
+    string[][string]  headers;
     string[string]  attrs;
     ubyte[]         data;
     string          path;
 
-    string getHeader( string k )
+    string[] getHeader( string k )
     {
-        return headers[ capHeaderInPlace( k.dup ) ];
+        return cast(string[]) headers[ capHeaderInPlace( k.dup ) ];
     }
 
     string getAttr( string k )
@@ -302,7 +314,7 @@ public:
         shared Response resp = cast( shared ) new Response( connection, protocol );
 
         if( "Connection" in headers )
-            resp.addHeader( "Connection", getHeader( "Connection" ) );
+            resp.addHeader( "Connection", getHeader( "Connection" )[ 0 ] );
 
         return resp;
     }
@@ -337,12 +349,12 @@ public:
     string          protocol;
     int             statusCode;
     string          statusMesg;
-    string[string]  headers;
+    string[][string]  headers;
     ubyte[]         data;
 
     shared( Response ) addHeader( string k, string v )
     {
-        headers[ capHeaderInPlace( k.dup ) ] = v;
+        headers[ capHeaderInPlace( k.dup ) ] ~= v;
         return this;
     }
 }
@@ -820,7 +832,7 @@ shared( Response ) notfound( shared( Response ) r )                     { return
 /** Convenience function to set the HTTP response status message */
 shared( Response ) msg( shared( Response ) r, string m )                { r.statusMesg = m; return r; }
 /** Convenience function to set a $(D_PSYMBOL Response) header */
-shared( Response ) header( shared( Response ) r, string h, string v )   { r.headers[ h ] = v; return r; }
+shared( Response ) header( shared( Response ) r, string h, string v )   { r.headers[ h ] ~= v; return r; }
 /** Convenience function to set a $(D_PSYMBOL Response) content */
 shared( Response ) content( shared( Response ) r, string v )            { r.data = cast( shared ubyte[] ) v.dup; return r; }
 /** Convenience function to set a $(D_PSYMBOL Response) content */

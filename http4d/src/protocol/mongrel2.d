@@ -224,15 +224,15 @@ HttpRequest parseMongrelRequest( char[] data )
         string key = capHeaderInPlace( k.dup );
 
         assert( v.type == JSON_TYPE.STRING );
-        req.headers[ key ] = v.str;
+        req.headers[ key ] ~= v.str;
 
         if( key == "Method" ) //TODO: Handle JSON method from Mongrel
-            req.method = toMethod( req.headers[ key ] );
+            req.method = toMethod( req.headers[ key ][ 0 ] );
         else if( key == "Version" )
-            req.protocol = req.headers[ key ];
+            req.protocol = req.headers[ key ][ 0 ];
     }
 
-    if( req.method == Method.UNKNOWN && req.headers[ "Method" ] == "JSON" )
+    if( req.method == Method.UNKNOWN && req.headers[ "Method" ][ 0 ] == "JSON" )
     {
         parseJSONBody( bodyStr, req );
         if( isDisconnect( req ) )
@@ -315,7 +315,7 @@ bool isDisconnect( HttpRequest req )
         return true;
 
     if( "Method" in req.headers && "type" in req.attrs )
-        return req.headers[ "Method" ] == "JSON" &&
+        return req.headers[ "Method" ][ 0 ] == "JSON" &&
                             req.attrs[ "type" ] == "disconnect";
     return false;
 }

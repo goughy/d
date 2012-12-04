@@ -31,13 +31,15 @@ enum CHUNK_SIZE     = 8096; //try to get at least Content-Length header in first
 bool running        = false;
 
 enum SERVER_HEADER  = "Server";
-enum SERVER_DESC    = "HTTP-D/1.0";
+enum SERVER_DESC    = "HTTP4D/1.0";
 enum NEWLINE        = "\r\n";
 enum HTTP_10        = "HTTP/1.0";
 enum HTTP_11        = "HTTP/1.1";
 enum SERVER_ADMIN   = "root";
 enum SERVER_HOST    = "localhost.localdomain";
 enum SERVER_PORT    = 8080;
+enum USER_AGENT     = SERVER_DESC ~ " (" ~ __VENDOR__ ~ " " ~ to!string( __VERSION__ ) ~ ")";
+
 /**
  * Delegate signature required to be implemented by any handler
  */
@@ -171,10 +173,11 @@ HttpResponse httpClient( string url )
 
    HttpRequest req = new HttpRequest;
    req.method   = Method.GET;
-   req.protocol = HTTP_10; //auto-close
+   req.protocol = HTTP_11; //auto-close
    req.uri      = u.path;
 
-   req.headers[ "Host" ] = (u.host ~ ":" ~ to!string( u.port )).idup;
+   req.headers[ "Host" ]       ~= u.host ~ ":" ~ to!string( u.port );
+   req.headers[ "User-Agent" ] ~= USER_AGENT;
    return httpClient( req );
 }
 
@@ -185,10 +188,11 @@ int responseId = 0;
 HttpResponse httpClient( HttpRequest req )
 {
     assert( req !is null );
+    assert( req.uri !is null );
     assert( "Host" in req.headers );
 
-    auto addrRes = parseAddr( req.getHeader( "Host" ), 80 );
-    debug req.dump( "HTTPCLIENT request" );
+    auto addrRes = parseAddr( req.getHeader( "Host" )[ 0 ], 80 );
+//    debug req.dump( "HTTPCLIENT request" );
 
     InternetAddress addr = new InternetAddress( addrRes[ 0 ], addrRes[ 1 ] );
     Socket sock = new Socket( AddressFamily.INET, SocketType.STREAM );
@@ -196,8 +200,8 @@ HttpResponse httpClient( HttpRequest req )
     sock.setOption( SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1 );
     sock.connect( addr );
 
-//    debug writeln( format( "phase 0: %s %s %s\r\n", to!string( req.method ), req.uri.dup, req.protocol.dup ) );
-    sock.send( toBuffer( req ) );
+    ubyte[] reqData = toBuffer( req );
+    auto len = sock.send( reqData );
 
     ubyte[] buf;
     buf.length = CHUNK_SIZE;
@@ -213,7 +217,7 @@ HttpResponse httpClient( HttpRequest req )
             buf.length = rem;
             num = sock.receive( buf );
             if( num > 0 )
-                rem = parseHttpData( currReq, buf );
+                rem = onHttpData( currReq, buf );
             else
                 throw new Exception( "EOF exception when attempting to receive next " ~ to!string( rem ) ~ " bytes" );
         }
@@ -228,7 +232,7 @@ HttpResponse httpClient( HttpRequest req )
         resp.headers = currReq.headers;
         resp.data    = currReq.data;
 
-        debug resp.dump( "RESPONSE " ~ addrRes[ 0 ] ~ ": " ~ to!string( responseId++ ) );
+//        debug resp.dump( "RESPONSE " ~ addrRes[ 0 ] ~ ": " ~ to!string( responseId++ ) );
         return resp;
     }
     return null;
@@ -249,7 +253,7 @@ interface HttpProcessor
 
 ulong[string] httpStats;
 
-void addStat( string s, ulong num )
+private void addStat( string s, ulong num )
 {
     if( auto p = s in httpStats )
         (*p) += num;
@@ -257,12 +261,12 @@ void addStat( string s, ulong num )
         httpStats[ s ] = num;
 }
 
-void incStat( string s )
+private void incStat( string s )
 {
     addStat( s, 1 );
 }
 
-void setStat( string s, ulong num )
+private void setStat( string s, ulong num )
 {
     httpStats[ s ] = num;
 }
@@ -350,7 +354,7 @@ public:
         }
         else if( state == State.Body )
         {
-            rem = parseHttpData( currReq, buf );
+            rem = onHttpData( currReq, buf );
         }
 
         if( rem <= 0UL && currReq !is null ) //no more data necessary
@@ -785,7 +789,7 @@ Tuple!( HttpRequest, ulong ) parseHttpHeaders( ubyte[] buf )
             string key = capHeaderInPlace( ( cast( char[] ) hdr[ 0 ] ) ).idup;
             string val = ( cast( char[] ) hdr[ 2 ] ).idup;
 
-            req.headers[ key ] = val;
+            req.headers[ key ] ~= val;
             if( key == "Content-Length" )
                 reqLen = to!ulong( val );
         }
@@ -820,17 +824,17 @@ Tuple!( HttpRequest, ulong ) parseHttpHeaders( ubyte[] buf )
             assert( 0, "Temp file not yet implemented" );
         }
         debug writefln( "Request length is greater than diversion length (%d > %d) - writing data to file %s", reqLen, DIVERT_REQUEST_LEN, to!string( cast(char[]) req.data ) );
-        parseHttpData( req, res[ 2 ] );
+        onHttpData( req, res[ 2 ] );
     }
     else
         req.data = cast( shared ubyte[] ) res[ 2 ];
 
-    debug dumpHex( cast( char[] ) req.data, "HTTP REQUEST" );
+//    debug dumpHex( cast( char[] ) req.data, "HTTP REQUEST" );
     return tuple( req, reqLen );
 }
 
 // ------------------------------------------------------------------------- //
-/++
+
 unittest
 {
     string httpHeader = "
@@ -847,40 +851,41 @@ Cookie: smplrefresh=5; speedlog2=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0; sessio
 ";
     StopWatch sw;
     sw.start();
-    for( int i = 0; i < 1_000_000; ++i )
+    for( int i = 0; i < 1_000; ++i )
     { 
         auto res = parseHttpHeaders( cast(ubyte[]) httpHeader.dup );
         assert( res[ 0 ] !is null );
         assert( res[ 1 ] == 0 );
     }
-    writefln( "Executed 1,000,000 headers parses in %dus", sw.peek().usecs / 1_000_000 ); 
+    writefln( "Executed 1,000 headers parses in %dus", sw.peek().usecs / 1_000 ); 
 }
-++/
+
 // ------------------------------------------------------------------------- //
 
-ulong parseHttpData( HttpRequest req, ubyte[] buf )
+ulong onHttpData( HttpRequest req, ubyte[] buf )
 {
-    if( req !is null && buf.length > 0 )
-    {
-        ulong len = 0UL;
-        if( req.path !is null )
-        {
-//            debug writefln( "Appending %d bytes to file %s", buf.length, to!string(cast(char[]) req.path ) );
-            auto f = File( to!string( cast(char[]) req.path ), "a" );
-            f.write( cast(char[]) buf );
-            f.flush();
-            len = f.tell();
-        }
-        else
-        {
-            req.data ~= buf;
-            len = req.data.length;
-        }
+    if( req is null || buf.length <= 0 )
+        return 0UL;
 
-        if( auto val = "Content-Length" in req.headers )
-            return to!ulong( cast(string) *val ) - len;
+    ulong len = 0UL;
+    if( req.path !is null )
+    {
+//            debug writefln( "Appending %d bytes to file %s", buf.length, to!string(cast(char[]) req.path ) );
+        auto f = File( to!string( cast(char[]) req.path ), "a" );
+        f.write( cast(char[]) buf );
+        f.flush();
+        len = f.tell();
     }
-    return 0UL;
+    else
+    {
+        req.data ~= buf;
+        len = req.data.length;
+    }
+
+    if( auto val = "Content-Length" in req.headers )
+        return to!ulong( cast(string) *val ) - len;
+
+    return len;
 }
 
 // ------------------------------------------------------------------------- //
@@ -907,13 +912,13 @@ Tuple!( ubyte[], bool ) toBuffer( HttpResponse r, bool isChunked = false )
 
         if( !( "Date" in r.headers ) )
         {
-        long now = time( null );
-        r.addHeader( "Date", to!string( asctime( gmtime( & now ) ) )[0..$ -1] );
+            long now = time( null );
+            r.addHeader( "Date", to!string( asctime( gmtime( & now ) ) )[0..$ -1] );
         }
 
         if( "Connection" in r.headers )
         {
-            needsClose = r.headers[ "Connection" ] == "close";
+            needsClose = r.headers[ "Connection" ][ 0 ] == "close";
 
             if( !needsClose && r.protocol.toUpper == HTTP_11 )
                 r.addHeader( "Connection", "Keep-Alive" );
@@ -922,14 +927,17 @@ Tuple!( ubyte[], bool ) toBuffer( HttpResponse r, bool isChunked = false )
         if( !( "Content-Length" in r.headers ) )
         r.addHeader( "Content-Length", to!string( r.data.length ) );
 
-        foreach( k, v; r.headers )
+        foreach( k, v1; r.headers )
         {
-            buf.put( cast( ubyte[] ) k );
-            buf.put( ':' );
-            buf.put( ' ' );
-            buf.put( cast( ubyte[] ) v );
-            buf.put( '\r' );
-            buf.put( '\n' );
+            foreach( v; v1 )
+            {
+                buf.put( cast( ubyte[] ) k );
+                buf.put( ':' );
+                buf.put( ' ' );
+                buf.put( cast( ubyte[] ) v );
+                buf.put( '\r' );
+                buf.put( '\n' );
+            }
         }
     }
     else
@@ -952,20 +960,20 @@ Tuple!( ubyte[], bool ) toBuffer( HttpResponse r, bool isChunked = false )
 
 ubyte[] toBuffer( HttpRequest req )
 {
-//    debug writeln( format( "phase 0: %s %s %s\r\n", to!string( req.method ), req.uri.dup, req.protocol.dup ) );
     ubyte[] buf;
-    buf.length = 1024;
 
     buf ~= format( "%s %s %s\r\n", to!string( req.method ), req.uri.dup, req.protocol.dup );
     buf ~= format( "Host: %s\r\n", req.getHeader( "Host" ) );
-    foreach( k,v; req.headers )
+    foreach( k,v1; req.headers )
     {
         if( k != "Host" )
-            buf~= format( "%s: %s\r\n", k, v );
+        {
+            foreach( v; v1 )
+                buf ~= format( "%s: %s\r\n", k.dup, v.dup );
+        }
     }
-    buf ~= format( "Connection: %s\r\n", req.protocol == HTTP_10 ? "close" : "Keep-Alive" );
-    buf ~= "\r\n";
 
+    buf ~= format( "Connection: %s\r\n\r\n", req.protocol == HTTP_10 ? "close" : "Keep-Alive" );
     return buf;
 }
 
@@ -974,7 +982,7 @@ ubyte[] toBuffer( HttpRequest req )
 bool isChunked( T )( T r )
 {
     return "Transfer-Encoding" in r.headers &&
-           r.headers[ "Transfer-Encoding" ].toLower == "chunked";
+           r.headers[ "Transfer-Encoding" ][ 0 ].toLower == "chunked";
 }
 
 // ------------------------------------------------------------------------- //
