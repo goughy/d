@@ -87,11 +87,21 @@ class ZMQConnection
     this( string addr, int type )
     {
         zmqSock = zmq_socket( zmqCtx, type );
-        zmq_connect( zmqSock, addr.toStringz );
+        connect( addr );
+    }
+
+    this( int type )
+    {
+        zmqSock = zmq_socket( zmqCtx, type );
     }
 
     ~this()
     {
+    }
+
+    void connect( string addr )
+    {
+        zmq_connect( zmqSock, addr.toStringz );
     }
 
     ZMQMsg receive( int flags = 0 )
@@ -112,6 +122,16 @@ class ZMQConnection
     {
         zmq_send( zmqSock, cast( zmq_msg_t * ) msg, 0 ); //send it off
         msg.destroy();
+    }
+
+    void setSockOpt( int opt, void * data, size_t len )
+    {
+        zmq_setsockopt( zmqSock, opt, data, len );
+    }
+
+    void setSockOpt( int opt, char[] data )
+    {
+       setSockOpt( opt, cast(void *) data.ptr, data.length );
     }
 
     void * opCast( T : void * )()

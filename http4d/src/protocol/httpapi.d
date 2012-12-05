@@ -796,10 +796,10 @@ string capHeaderInPlace( char[] hdr )
  * and return an associative array of the pairs
  */
 
-string[string] parseHeader( string c )
+string[string] parseHeader( string c, string delim = "," )
 {
     string[string] result;
-    foreach( ref val; std.algorithm.splitter( c, "," ) )
+    foreach( ref val; std.algorithm.splitter( c, delim ) )
     {
         auto r1 = std.algorithm.findSplit( val, "=" );
         if( r1.length == 3 )

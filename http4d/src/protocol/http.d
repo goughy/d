@@ -58,6 +58,8 @@ public:
         statusCode = code;
     }
 
+    @property int code() { return statusCode; }
+
     HttpResponse getResponse()
     {
         HttpResponse resp = new HttpResponse();
