@@ -30,9 +30,9 @@ extern (C)
 
 enum
 {
-    ZMQ_VERSION_MAJOR   =2,
-    ZMQ_VERSION_MINOR   =1,
-    ZMQ_VERSION_PATCH   =10
+    ZMQ_VERSION_MAJOR   =3,
+    ZMQ_VERSION_MINOR   =2,
+    ZMQ_VERSION_PATCH   =2
 }
 
 /*  Run-time API version detection                                            */
@@ -58,6 +58,15 @@ immutable enum
     ECONNREFUSED    = (ZMQ_HAUSNUMERO + 7),
     EINPROGRESS     = (ZMQ_HAUSNUMERO + 8),
     ENOTSOCK        = (ZMQ_HAUSNUMERO + 9),
+    EMSGSIZE        = (ZMQ_HAUSNUMERO + 10),
+    EAFNOSUPPORT    = (ZMQ_HAUSNUMERO + 11),
+    ENETUNREACH     = (ZMQ_HAUSNUMERO + 12),
+    ECONNABORTED    = (ZMQ_HAUSNUMERO + 13),
+    ECONNRESET      = (ZMQ_HAUSNUMERO + 14),
+    ENOTCONN        = (ZMQ_HAUSNUMERO + 15),
+    ETIMEDOUT       = (ZMQ_HAUSNUMERO + 16),
+    EHOSTUNREACH    = (ZMQ_HAUSNUMERO + 17),
+    ENETRESET       = (ZMQ_HAUSNUMERO + 18),
 
 /*  Native 0MQ error codes.                                                   */
     EFSM            = (ZMQ_HAUSNUMERO + 51),
@@ -84,7 +93,7 @@ immutable enum
 /*  to avoid excessive memory allocation/deallocation.                        */
 /*  If VMSs larger than 255 bytes are required, type of 'vsm_size'            */
 /*  field in zmq_msg_t structure should be modified accordingly.              */
-    ZMQ_MAX_VSM_SIZE    = 30,
+    ZMQ_MAX_VSM_SIZE    = 32,
 
 /*  Message types. These integers may be stored in 'content' member of the    */
 /*  message instead of regular pointer to the data.                           */
@@ -104,10 +113,7 @@ immutable enum
 /*  (see src/msg_content.hpp for its definition).                             */
 struct zmq_msg_t
 {
-    void* content;
-    ubyte flags;
-    ubyte vsm_size;
-    ubyte vsm_data[ZMQ_MAX_VSM_SIZE];
+    ubyte x[ZMQ_MAX_VSM_SIZE];
 }
 
 int zmq_msg_init(zmq_msg_t* msg);
@@ -119,13 +125,17 @@ int zmq_msg_move(zmq_msg_t* dest, zmq_msg_t* src);
 int zmq_msg_copy(zmq_msg_t* dest, zmq_msg_t* src);
 void* zmq_msg_data(zmq_msg_t* msg);
 size_t zmq_msg_size(zmq_msg_t* msg);
+int zmq_msg_send(zmq_msg_t *msg, void *socket, int flags);
+int zmq_msg_recv (zmq_msg_t *msg, void *socket, int flags);
 
 /******************************************************************************/
 /*  0MQ infrastructure (a.k.a. context) initialisation & termination.         */
 /******************************************************************************/
 
-void* zmq_init(int io_threads);
-int zmq_term(void* context);
+void *zmq_ctx_new();
+int zmq_ctx_destroy(void *context);
+int zmq_ctx_set(void *context, int option, int optval);
+int zmq_ctx_get(void *context, int option);
 
 /******************************************************************************/
 /*  0MQ socket definition.                                                    */
@@ -144,25 +154,18 @@ immutable enum
     ZMQ_PULL        = 7,
     ZMQ_PUSH        = 8,
     ZMQ_XPUB        = 9,
-    ZMQ_XSUB        = 10,
-    ZMQ_XREQ        = ZMQ_DEALER,   /*  Old alias, remove in 3.x  */
-    ZMQ_XREP        = ZMQ_ROUTER,   /*  Old alias, remove in 3.x  */
-    ZMQ_UPSTREAM    = ZMQ_PULL,     /*  Old alias, remove in 3.x  */
-    ZMQ_DOWNSTREAM  = ZMQ_PUSH      /*  Old alias, remove in 3.x  */
+    ZMQ_XSUB        = 10
 }
 
 /*  Socket options.                                                           */
 immutable enum
 {
-    ZMQ_HWM             = 1,
-    ZMQ_SWAP            = 3,
     ZMQ_AFFINITY        = 4,
     ZMQ_IDENTITY        = 5,
     ZMQ_SUBSCRIBE       = 6,
     ZMQ_UNSUBSCRIBE     = 7,
     ZMQ_RATE            = 8,
     ZMQ_RECOVERY_IVL    = 9,
-    ZMQ_MCAST_LOOP      = 10,
     ZMQ_SNDBUF          = 11,
     ZMQ_RCVBUF          = 12,
     ZMQ_RCVMORE         = 13,
@@ -172,14 +175,34 @@ immutable enum
     ZMQ_LINGER          = 17,
     ZMQ_RECONNECT_IVL   = 18,
     ZMQ_BACKLOG         = 19,
-    ZMQ_RECOVERY_IVL_MSEC = 20, /*opt. recovery time, reconcile in 3.x */
-    ZMQ_RECONNECT_IVL_MAX = 21
+    ZMQ_RECONNECT_IVL_MAX = 21,
+    ZMQ_MAXMSGSIZE      = 22,
+    ZMQ_SNDHWM          = 23,
+    ZMQ_RCVHWM = 24,
+    ZMQ_MULTICAST_HOPS = 25,
+    ZMQ_RCVTIMEO = 27,
+    ZMQ_SNDTIMEO = 28,
+    ZMQ_IPV4ONLY = 31,
+    ZMQ_LAST_ENDPOINT = 32,
+    ZMQ_ROUTER_MANDATORY = 33,
+    ZMQ_TCP_KEEPALIVE = 34,
+    ZMQ_TCP_KEEPALIVE_CNT = 35,
+    ZMQ_TCP_KEEPALIVE_IDLE = 36,
+    ZMQ_TCP_KEEPALIVE_INTVL = 37,
+    ZMQ_TCP_ACCEPT_FILTER = 38,
+    ZMQ_DELAY_ATTACH_ON_CONNECT = 39,
+    ZMQ_XPUB_VERBOSE = 40
+}
+/* Message options                                                           */
+immutable enum
+{
+    ZMQ_MORE = 1
 }
 
 /*  Send/recv options.                                                        */
 immutable enum
 {
-    ZMQ_NOBLOCK = 1,
+    ZMQ_DONTWAIT = 1,
     ZMQ_SNDMORE = 2
 }
 
@@ -189,8 +212,10 @@ int zmq_setsockopt(void* s, int option, void* optval, size_t optvallen);
 int zmq_getsockopt(void* s, int option, void* optval, size_t *optvallen);
 int zmq_bind(void* s, const char* addr);
 int zmq_connect(void* s, immutable char* addr);
-int zmq_send(void* s, zmq_msg_t* msg, int flags);
-int zmq_recv(void* s, zmq_msg_t* msg, int flags);
+int zmq_unbind(void *s, const char *addr);
+int zmq_disconnect(void *s, const char *addr);
+int zmq_sendmsg(void* s, zmq_msg_t* msg, int flags);
+int zmq_recvmsg(void* s, zmq_msg_t* msg, int flags);
 
 /******************************************************************************/
 /*  I/O multiplexing.                                                         */

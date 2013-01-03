@@ -310,7 +310,7 @@ public:
 
     shared( Response ) getResponse()
     {
-        //bind the response to the reqest connection
+        //bind the response to the request connection
         shared Response resp = cast( shared ) new Response( connection, protocol );
 
         if( "Connection" in headers )
@@ -318,6 +318,8 @@ public:
 
         return resp;
     }
+
+    
 }
 
 // ------------------------------------------------------------------------- //
@@ -593,6 +595,7 @@ public:
     {
         foreach( handler; handlerMap )
         {
+            debug writefln( "Checking regex %s matches uri %s", handler.u, req.uri );
             if( match( req.uri, handler.r ) )
                 return handler.f( req );
         }
@@ -701,7 +704,7 @@ private:
                 base = base[ 0 .. $ - 1 ];
 
             writeln( "Mapping " ~ T.stringof ~ "." ~ funcName ~"() -> [" ~ to!string( method ) ~ ", " ~ base ~ "/" ~ mountPoint ~ "]" );
-            uriRouter.mount( "^" ~ base ~ "/" ~ mountPoint ~ "$", handler );
+            uriRouter.mount( "^" ~ base ~ "/" ~ mountPoint, handler );
             methodRouter.mount( method, uriRouter );
         }
 

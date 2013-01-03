@@ -22,11 +22,12 @@ import core.sys.posix.signal, core.sys.posix.stdlib;
 import zmq;
 
 public import protocol.httpapi;
+public import protocol.zsocket;
 
 enum MAX_REQUEST_LEN = 1024 * 1024 * 20; // 20MB
 enum DIVERT_REQUEST_LEN = 1024 * 30; // 50kB
 
-enum TIMEOUT_USEC   = 1000;
+enum TIMEOUT_MSEC   = 0;
 enum CHUNK_SIZE     = 8096; //try to get at least Content-Length header in first chunk
 bool running        = false;
 
@@ -162,6 +163,16 @@ void httpServe( string bindAddr, Tid tid )
     auto res = parseAddr( bindAddr, SERVER_PORT );
     HttpProcessor proc = new TidProcessor( tid, "[HTTP-D] " );
     proc.onLog( "Executing in ASYNC mode" );
+    httpServeImpl( res[ 0 ], res[ 1 ], proc );
+}
+
+// ------------------------------------------------------------------------- //
+
+void httpServe( string bindAddr, string zmqIPCAddr )
+{
+    auto res = parseAddr( bindAddr, SERVER_PORT );
+    HttpProcessor proc = new ZmqProcessor( zmqIPCAddr, "[HTTP-D] " );
+    proc.onLog( "Executing in ZMQ mode" );
     httpServeImpl( res[ 0 ], res[ 1 ], proc );
 }
 
@@ -522,7 +533,7 @@ private void httpServeImpl( string address, ushort port, HttpProcessor proc )
     {
         ptmp.length = 0;
 
-        int num = zmq_poll( pitem.ptr, cast( int ) pitem.length, receivedData ? 0 : TIMEOUT_USEC );
+        int num = zmq_poll( pitem.ptr, cast( int ) pitem.length, receivedData ? 0 : TIMEOUT_MSEC );
         if( num > 0 || receivedData )
         {
             for( long i = 0; i < pitem.length; i++ )
@@ -729,6 +740,54 @@ public:
 protected:
 
     HttpResponse delegate(HttpRequest) dg;
+    string prefix;
+    bool   hadData;
+}
+
+// ------------------------------------------------------------------------- //
+
+class ZmqProcessor : HttpProcessor
+{
+public:
+
+    this( string ipcAddr, string logPrefix = "[ZMQ] " )
+    {
+        prefix = logPrefix;
+        sock = new ZSocket( ipcAddr, ZMQ_PUSH );
+    }
+
+    void onInit()
+    {
+        onLog( "Protocol initialising (ZMQ mode)" );
+    }
+
+    void onLog( string s )
+    {
+        writeln( prefix ~ s );
+    }
+
+    void onExit()
+    {
+        onLog( "Protocol exiting (ZMQ mode)" );
+    }
+
+    void onRequest( HttpRequest req )
+    {
+        //1. Serialise request
+        //2. Send request over ZMQ socket
+        
+    }
+
+    bool onIdle()
+    {
+        //1. Attempt to receive request
+        hadData = false;
+        return hadData;
+    }
+
+protected:
+
+    ZSocket sock;
     string prefix;
     bool   hadData;
 }

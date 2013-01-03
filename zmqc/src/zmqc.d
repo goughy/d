@@ -9,63 +9,6 @@ bool running = true;
 
 // ------------------------------------------------------------------------- //
 
-class ZMsg
-{
-    zmq_msg_t * msg;
-    char[] msg_data;
-
-    this()
-    {
-        msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
-        zmq_msg_init( msg );
-    }
-
-    this( char[] buf )
-    {
-        msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
-        zmq_msg_init_size( msg, buf.length );
-        std.c.string.memcpy( zmq_msg_data( msg ), buf.ptr, buf.length );
-    }
-
-    ~this()
-    {
-        destroy();
-    }
-
-    @property ulong length()
-    {
-        return (msg is null) ? 0UL : zmq_msg_size( msg );
-    }
-
-    @property char[] data()
-    {
-        if( msg_data.length == 0 && msg !is null )
-        {
-            msg_data.length = zmq_msg_size( msg );
-            if( msg_data.length > 0 )
-                std.c.string.memcpy( msg_data.ptr, zmq_msg_data( msg ), msg_data.length );
-
-            destroy();
-        }
-        return msg_data;
-    }
-
-    zmq_msg_t * opCast( T: zmq_msg_t * )()
-    {
-        return msg;
-    }
-
-    void destroy()
-    {
-        if( msg !is null )
-            std.c.stdlib.free( msg );
-
-        msg = null;
-    }
-}
-
-// ------------------------------------------------------------------------- //
-
 class ZSocket
 {
     static void * zmqCtx;
@@ -73,12 +16,12 @@ class ZSocket
 
     static this()
     {
-        zmqCtx = zmq_init( 1 );
+        zmqCtx = zmq_ctx_new();
     }
 
     static ~this()
     {
-        zmq_term( zmqCtx );
+        zmq_ctx_destroy( zmqCtx );
     }
 
     static string verStr()
@@ -89,12 +32,10 @@ class ZSocket
     }
 
     void * zmqSock;
-    ZMsg zmqMsg;
 
     this( int type )
     {
         zmqSock = zmq_socket( zmqCtx, type );
-//        zmq_connect( zmqSock, addr.toStringz );
     }
 
     ~this()
@@ -105,38 +46,33 @@ class ZSocket
     void bind( string addr )
     {
         debug writefln( "BIND: %s", addr );
-        zmq_bind( zmqSock, addr.toStringz );
+        assert( zmq_bind( zmqSock, addr.toStringz ) == 0 );
     }
 
     void connect( string addr )
     {
         debug writefln( "CONNECT: %s", addr );
-        zmq_connect( zmqSock, addr.toStringz );
+        assert( zmq_connect( zmqSock, addr.toStringz ) == 0 );
     }
 
-    ZMsg receive( int flags = 0 )
+    char[] receive( int flags = 0 )
     {
-        if( zmqMsg is null )
-            zmqMsg = new ZMsg();
-
-        if( zmq_recv( zmqSock, cast( zmq_msg_t* ) zmqMsg, flags ) == 0 )
-        {
-            ZMsg msg = zmqMsg;
-            zmqMsg = null;
-            return msg;
-        }
-        return null;
-    }
-
-    void send( ZMsg msg )
-    {
-        zmq_send( zmqSock, cast( zmq_msg_t * ) msg, 0 ); //send it off
-        msg.destroy();
+        zmq_msg_t msg;
+        assert( zmq_msg_init( &msg ) == 0 );
+        auto len = zmq_msg_recv( & msg, zmqSock, flags );
+        assert( len >= 0 );
+        char[] data = cast(char[]) zmq_msg_data( & msg )[ 0 .. len ].dup;
+        zmq_msg_close( & msg );
+        return data;
     }
 
     void send( char[] buf )
     {
-        send( new ZMsg( buf ) );
+        zmq_msg_t msg;
+        assert( zmq_msg_init_size( & msg, buf.length ) == 0 );
+        std.c.string.memcpy( zmq_msg_data( & msg ), buf.ptr, buf.length );
+        assert( zmq_msg_send( & msg, zmqSock, 0 ) > -1 ); //send it off
+        zmq_msg_close( & msg );
     }
 
     int setSockOpt( int optName, char[] val )
@@ -156,11 +92,6 @@ class ZSocket
         if( zmqSock !is null )
             zmq_close( zmqSock );
     }
-
-    void * opCast( T : void * )()
-    {
-        return zmqSock;
-    }
 }
 
 // ------------------------------------------------------------------------- //
@@ -175,6 +106,24 @@ enum SockType { PUSH = ZMQ_PUSH,
 
 // ------------------------------------------------------------------------- //
 
+void usage( string name )
+{
+    writefln( "Usage: %s [options] TYPE address...", name );
+    writefln( "where TYPE is one of (PUSH,PULL,PUB,SUB,REQ,REP,PAIR)" );
+    writefln( "and [options] are:" );
+    writefln( "\t-n|--num [nnn]\t\tLimit number of operations to [nnn]" );
+    writefln( "\t-r|--read\t\tEnable read mode" );
+    writefln( "\t-w|--write\t\tEnable write mode" );
+    writefln( "\t-b|--bind\t\tBind to specified addresses..." );
+    writefln( "\t-c|--connect\t\tConnect to specified addresses..." );
+    writefln( "\t-o|--options [list]\tSet socket options from [list] in opt1=val1,opt2=val2 format" );
+    writefln( "\t-h|--help\t\tThis help" );
+
+    exit( 1 );
+}
+
+// ------------------------------------------------------------------------- //
+
 int main( string[] args )
 {
     bool nullDelim = false;
@@ -183,6 +132,7 @@ int main( string[] args )
     bool writeMode = false;
     bool doBind = false;
     bool doConnect = false;
+    bool showHelp = false;
     string[] options;
 
     getopt( args,
@@ -192,7 +142,11 @@ int main( string[] args )
             "w|write", &writeMode,
             "b|bind", &doBind,
             "c|connect", &doConnect,
-            "o|options", &options );
+            "o|options", &options,
+            "h|help", &showHelp );
+
+    if( showHelp )
+        usage( args[ 0 ] );
 
     string type;
     string[] addr;
@@ -244,11 +198,11 @@ int main( string[] args )
                 break;
 
             conn.send( buf );
-            write( conn.receive().data() );
+            write( conn.receive() );
         }
         else if( st == SockType.REP )
         {
-            write( conn.receive().data() );
+            write( conn.receive() );
 
             if( stdin.readln( buf, delim ) <= 0 )
                 break;
@@ -256,7 +210,9 @@ int main( string[] args )
             conn.send( buf );
         }
         else if( readMode )
-            write( "RECEIVE: ", conn.receive().data() );
+        {
+            write( "RECEIVE: ", conn.receive() );
+        }
         else if( writeMode )
         {
             if( stdin.readln( buf, delim ) <= 0 )

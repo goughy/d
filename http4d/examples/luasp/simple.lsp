@@ -14,7 +14,7 @@ METHOD: <?=env.method?><br>
 URI: <?=env.uri?><br>
 ARGS: <?=env.args?><br>
 UUID: <?=uuid_gen()?><br>
-
+Cookie: <?=get_in_header( "Cookie" )?><br>
 
 
 <?

@@ -22,7 +22,7 @@ solution "http4d"
     project "http4d"
         kind "ConsoleApp"
         language "D"
-        files { "main.d", "src/protocol/*.d" }
+        files { "main.d", "src/protocol/*.d", "src/deimos/*.d" }
         links { "zmq" }
 
     project "lua"
@@ -37,7 +37,7 @@ solution "http4d"
         language "D"
 --        buildoptions "-v"
         includedirs { LuaD }
-        files { "examples/luasp/lsp.d", "src/protocol/*.d", "src/luasp/*.d" }
+        files { "examples/luasp/lsp.d", "src/protocol/*.d", "src/luasp/*.d", "src/deimos/*.d" }
         files { LuaD .. "/luad/*.d", LuaD .. "/luad/conversions/*.d", LuaD .. "/luad/c/*.d" }
         links { "lua", "zmq" }
 
@@ -45,7 +45,7 @@ solution "http4d"
         kind "ConsoleApp"
         language "D"
         includedirs { LuaD }
-        files { "examples/luasp/lsp_standalone.d", "src/luasp/process.d" }
+        files { "examples/luasp/lsp_standalone.d", "src/luasp/process.d", "src/deimos/*.d" }
         files { LuaD .. "/luad/*.d", LuaD .. "/luad/conversions/*.d", LuaD .. "/luad/c/*.d" }
         links { "lua" }
 
@@ -54,14 +54,14 @@ solution "http4d"
         language "D"
         buildoptions { "-unittest" }
         files { "client.d" }
-        files { "src/protocol/*.d" }
+        files { "src/protocol/*.d", "src/deimos/*.d" }
         links { "zmq" }
 
     project "autoroute"
         kind "ConsoleApp"
         language "D"
 --        buildoptions { "-unittest" }
-        files { "examples/autoroute.d" }
+        files { "examples/autoroute.d", "src/deimos/*.d" }
         files { "src/protocol/*.d" }
         links { "zmq" }
 

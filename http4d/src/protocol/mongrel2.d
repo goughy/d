@@ -1,174 +1,40 @@
 
 module protocol.mongrel2;
 
-import std.ascii;
+import std.ascii, std.c.stdlib;
 public import protocol.http;
+public import protocol.zsocket;
 import std.stdio, std.string, std.conv, std.stdint, std.array, std.range,
        std.datetime, std.algorithm, std.concurrency, std.typecons, std.random, std.utf;
 
 import std.json;
-import zmq;
 
 string zmqIdentity;
 bool running = true;
 
-// ------------------------------------------------------------------------- //
-
-class ZMQMsg
-{
-    zmq_msg_t * msg;
-    char[] msg_data;
-
-    this()
-    {
-        msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
-        zmq_msg_init( msg );
-    }
-
-    this( char[] buf )
-    {
-        msg = cast(zmq_msg_t *) std.c.stdlib.malloc( zmq_msg_t.sizeof );
-        zmq_msg_init_size( msg, buf.length );
-        std.c.string.memcpy( zmq_msg_data( msg ), buf.ptr, buf.length );
-    }
-
-    ~this()
-    {
-        destroy();
-    }
-
-    @property ulong length()
-    {
-        return (msg is null) ? 0UL : zmq_msg_size( msg );
-    }
-
-    @property char[] data()
-    {
-        if( msg_data.length == 0 && msg !is null )
-        {
-            msg_data.length = zmq_msg_size( msg );
-            if( msg_data.length > 0 )
-                std.c.string.memcpy( msg_data.ptr, zmq_msg_data( msg ), msg_data.length );
-
-            destroy();
-        }
-        return msg_data;
-    }
-
-    zmq_msg_t * opCast( T: zmq_msg_t * )()
-    {
-        return msg;
-    }
-
-    void destroy()
-    {
-        if( msg !is null )
-            std.c.stdlib.free( msg );
-
-        msg = null;
-    }
-}
+extern (C) int errno;
 
 // ------------------------------------------------------------------------- //
 
-class ZMQConnection
+void mongrel2ServeImpl( ZSocket zmqReceive, HttpProcessor proc )
 {
-    static void * zmqCtx;
-    static string zmqIdent;
-
-    static this()
-    {
-        zmqCtx = zmq_init( 1 );
-    }
-
-    void * zmqSock;
-    ZMQMsg zmqMsg;
-
-    this( string addr, int type )
-    {
-        zmqSock = zmq_socket( zmqCtx, type );
-        connect( addr );
-    }
-
-    this( int type )
-    {
-        zmqSock = zmq_socket( zmqCtx, type );
-    }
-
-    ~this()
-    {
-    }
-
-    void connect( string addr )
-    {
-        zmq_connect( zmqSock, addr.toStringz );
-    }
-
-    ZMQMsg receive( int flags = 0 )
-    {
-        if( zmqMsg is null )
-            zmqMsg = new ZMQMsg();
-
-        if( zmq_recv( zmqSock, cast( zmq_msg_t* ) zmqMsg, flags ) == 0 )
-        {
-            ZMQMsg msg = zmqMsg;
-            zmqMsg = null;
-            return msg;
-        }
-        return null;
-    }
-
-    void send( ZMQMsg msg )
-    {
-        zmq_send( zmqSock, cast( zmq_msg_t * ) msg, 0 ); //send it off
-        msg.destroy();
-    }
-
-    void setSockOpt( int opt, void * data, size_t len )
-    {
-        zmq_setsockopt( zmqSock, opt, data, len );
-    }
-
-    void setSockOpt( int opt, char[] data )
-    {
-       setSockOpt( opt, cast(void *) data.ptr, data.length );
-    }
-
-    void * opCast( T : void * )()
-    {
-        return zmqSock;
-    }
-}
-
-// ------------------------------------------------------------------------- //
-
-void mongrel2ServeImpl( ZMQConnection zmqReceive, HttpProcessor proc )
-{
-    int major, minor, patch;
-    zmq_version( &major, &minor, &patch );
-    proc.onLog( format( "zmq_version = %d.%d.%d", major, minor, patch ) );
-
     char[ 20 ] ident;
     for( auto i = 0; i < 20; ++i )
         ident[ i ] = uniform( 'a', 'z' );
 
     zmqIdentity = ident.idup;
     writeln( "Identity: ", ident );
-//    zmq_setsockopt( zmqReceive, ZMQ_IDENTITY, cast(char *) zmqIdentity.toStringz, zmqIdentity.length );
-
+    zmqReceive.setSockOpt( ZMQ_IDENTITY, ident );
 
     bool done = false;
     while( !done )
     {
-        ZMQMsg msg = zmqReceive.receive();
-        if( msg !is null )
-        {
-            debug dumpHex( msg.data );
+        char[] msg = zmqReceive.receive( ZMQ_DONTWAIT );
+        debug dumpHex( msg );
 
-            HttpRequest req = parseMongrelRequest( msg.data );
-            if( req !is null && !isDisconnect( req ) )
-                proc.onRequest( req );
-        }
+        HttpRequest req = parseMongrelRequest( msg );
+        if( req !is null && !isDisconnect( req ) )
+            proc.onRequest( req );
 
         proc.onIdle();
     }
@@ -179,16 +45,21 @@ void mongrel2ServeImpl( ZMQConnection zmqReceive, HttpProcessor proc )
 
 void mongrel2Serve( string addrPull, string addrPub, RequestDelegate dg )
 {
+    int major, minor, patch;
+    zmq_version( &major, &minor, &patch );
+
     auto resPull = parseAddr( addrPull, SERVER_PORT );
     auto resPub  = parseAddr( addrPub, SERVER_PORT );
 
     string pull = format( "tcp://%s:%d", resPull[ 0 ], resPull[ 1 ] );
     string pub  = format( "tcp://%s:%d", resPub[ 0 ], resPub[ 1 ] );
 
-    ZMQConnection zmqReceive = new ZMQConnection( pull, ZMQ_PULL );
-    ZMQConnection zmqPublish = new ZMQConnection( pub, ZMQ_PUB );
+    auto zmqReceive = new ZSocket( pull, ZMQ_PULL );
+    auto zmqPublish = new ZSocket( pub, ZMQ_PUB );
 
     HttpProcessor proc = new DelegateProcessor( dg, zmqPublish );
+    proc.onLog( format( "[0MQ %d.%d.%d] Connecting PULL socket to %s", major, minor, patch, pull ) );
+    proc.onLog( format( "[0MQ %d.%d.%d] Connecting PUB socket to %s", major, minor, patch, pub ) );
     proc.onLog( "Executing in SYNC mode" );
 
     mongrel2ServeImpl( zmqReceive, proc );
@@ -198,17 +69,21 @@ void mongrel2Serve( string addrPull, string addrPub, RequestDelegate dg )
 
 void mongrel2Serve( string addrPull, string addrPub, Tid tid )
 {
+    int major, minor, patch;
+    zmq_version( &major, &minor, &patch );
+
     auto resPull = parseAddr( addrPull, SERVER_PORT );
     auto resPub  = parseAddr( addrPub, SERVER_PORT );
 
     string pull = format( "tcp://%s:%d", resPull[ 0 ], resPull[ 1 ] );
     string pub  = format( "tcp://%s:%d", resPub[ 0 ], resPub[ 1 ] );
 
-    ZMQConnection zmqReceive = new ZMQConnection( pull, ZMQ_PULL );
-    ZMQConnection zmqPublish = new ZMQConnection( pub, ZMQ_PUB );
+    auto zmqReceive = new ZSocket( pull, ZMQ_PULL );
+    auto zmqPublish = new ZSocket( pub, ZMQ_PUB );
 
     HttpProcessor proc = new TidProcessor( tid, zmqPublish );
-    proc.onLog( "Executing in ASYNC mode" );
+    proc.onLog( format( "[0MQ %d.%d.%d] Connecting PULL socket to %s", major, minor, patch, pull ) );
+    proc.onLog( format( "[0MQ %d.%d.%d] Connecting PUB socket to %s", major, minor, patch, pub ) );
 
     mongrel2ServeImpl( zmqReceive, proc );
 }
@@ -267,7 +142,7 @@ HttpRequest parseMongrelRequest( char[] data )
 
 // ------------------------------------------------------------------------- //
 
-ZMQMsg toMongrelResponse( HttpResponse resp )
+char[] toMongrelResponse( HttpResponse resp )
 {
     //serialise the response as appropriate
     auto buf = appender!( ubyte[] )();
@@ -296,9 +171,8 @@ ZMQMsg toMongrelResponse( HttpResponse resp )
     buf.put( x[ 0 ] );
     //TODO: ignoring x[ 1 ] (ie. needsClose, for now)
 
-    ZMQMsg msg = new ZMQMsg( cast(char[]) buf.data );
     debug dumpHex( cast(char[]) buf.data );
-    return msg;
+    return cast(char[]) buf.data.dup;
 }
 
 // ------------------------------------------------------------------------- //
@@ -344,7 +218,7 @@ bool isDisconnect( HttpRequest req )
 
 class TidProcessor : protocol.http.TidProcessor
 {
-    this( Tid tid, ZMQConnection conn )
+    this( Tid tid, ZSocket conn )
     {
         super( tid, "[MONGREL2] " );
         zmqConn = conn;
@@ -359,9 +233,9 @@ class TidProcessor : protocol.http.TidProcessor
             },
             ( HttpResponse resp )
             {
-                ZMQMsg msg = toMongrelResponse( resp );
-                if( msg !is null )
-                    zmqConn.send( msg );
+                debug writefln( "protocol.mongrel2.TidProcessor::onIdle() received response" );
+                if( resp !is null )
+                    zmqConn.send( toMongrelResponse( resp ) );
             } );
 
         return true;
@@ -369,14 +243,14 @@ class TidProcessor : protocol.http.TidProcessor
 
 private:
 
-    ZMQConnection zmqConn;
+    ZSocket zmqConn;
 }
 
 // ------------------------------------------------------------------------- //
 
 class DelegateProcessor : protocol.http.DelegateProcessor
 {
-    this( HttpResponse delegate(HttpRequest) dg, ZMQConnection conn )
+    this( HttpResponse delegate(HttpRequest) dg, ZSocket conn )
     {
         super( dg, "[MONGREL2] " );
         zmqConn = conn;
@@ -387,18 +261,11 @@ class DelegateProcessor : protocol.http.DelegateProcessor
         HttpResponse resp = dg( req );
 
         if( resp !is null )
-        {
-            ZMQMsg msg = toMongrelResponse( resp );
-            if( msg !is null )
-            {
-//                onLog( "Sending response length " ~ to!string( msg.length ) );
-                zmqConn.send( msg );
-            }
-        }
+            zmqConn.send( toMongrelResponse( resp ) );
     }
 
 private:
 
-    ZMQConnection zmqConn;
+    ZSocket zmqConn;
 }
 
